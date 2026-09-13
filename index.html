@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.1</title>
+<title>線邊棧板入庫 V1.1.1</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.1</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.1.1</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -56,7 +56,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 
 <section id="adminView" class="hide">
   <div class="card"><h2>⚙️ 主管模式 / Mode Supervisor</h2><div id="adminGate"><label>主管 PIN / PIN Supervisor</label><div class="row"><input id="pin" type="password" inputmode="numeric" placeholder="PIN"><button class="tight" id="unlockBtn">解鎖</button></div><p class="note">V1 預設 PIN：2468。正式版請更換並改用帳號/Face ID。</p></div><div id="adminPanel" class="hide">
-    <div class="setting"><label>匯入「更新資料」CSV / Import data pembanding</label><input id="masterInput" type="file" accept=".csv,text/csv"><p class="note" id="masterStatus">尚未匯入</p></div>
+    <div class="setting"><label>匯入「更新資料」CSV / Import data pembanding</label><input id="masterInput" type="file" accept=".csv,text/csv"><div class="row" style="margin-top:10px"><button id="importMasterBtn" disabled>⬆️ 匯入更新資料 / Import Data</button></div><p class="note" id="masterStatus">尚未匯入比對資料。請先選擇 CSV，再按「匯入更新資料」。</p></div>
     <div class="setting"><label>棧板重量上限 KG / Batas berat palet</label><input id="limitKg" type="number" value="3000" min="1" step="0.1"></div>
     <div class="setting"><label>棧板分組 / Pengelompokan</label><select id="groupMode"><option value="customer">客戶代碼 / Kode pelanggan</option><option value="customerPart">客戶代碼 + Part No.</option></select></div>
     <div class="grid"><button id="rebuildBtn">🔄 棧板整理 / Atur Ulang</button><button class="secondary" id="backupBtn">💾 完整備份 / Backup</button></div>
@@ -69,7 +69,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 <script>
 const FIELDS=[['boxNo','Box No.'],['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W. (KG)'],['gw','G.W. (KG)']];
 const $=s=>document.querySelector(s); const $$=s=>[...document.querySelectorAll(s)];
-const state={master:[],records:[],settings:{limitKg:3000,groupMode:'customer'},db:null,labelPhotoBlob:null,boxPhotoBlob:null,labelOCR:{},boxOCR:{},ocr:{},match:null,transactionId:null};
+const state={master:[],records:[],settings:{limitKg:3000,groupMode:'customer'},db:null,labelPhotoBlob:null,boxPhotoBlob:null,labelOCR:{},boxOCR:{},ocr:{},match:null,transactionId:null,pendingMasterFile:null};
 setInterval(()=>$('#clock').textContent=new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}),1000);
 
 function normText(v){return String(v??'').trim().replace(/\s+/g,' ').replace(/[，,]/g,'');}
@@ -140,11 +140,14 @@ function renderPallets(){const limit=Number(state.settings.limitKg)||3000;const 
 $('#unlockBtn').onclick=()=>{if($('#pin').value==='2468'){$('#adminGate').classList.add('hide');$('#adminPanel').classList.remove('hide');renderHistory()}else alert('PIN 錯誤')};
 $('#limitKg').onchange=async()=>{state.settings.limitKg=Number($('#limitKg').value)||3000;await idbPut('settings',{key:'limitKg',value:state.settings.limitKg});renderPallets()};
 $('#groupMode').onchange=async()=>{state.settings.groupMode=$('#groupMode').value;await idbPut('settings',{key:'groupMode',value:state.settings.groupMode})};
-$('#masterInput').onchange=async e=>{const f=e.target.files[0];if(!f)return;const text=await f.text();const rows=parseCSV(text);if(!rows.length){alert('CSV 無資料');return}const mapped=rows.map(mapMasterRow).filter(x=>x.boxNo);const store=tx('master','readwrite');store.clear();await new Promise((res,rej)=>{store.transaction.oncomplete=res;store.transaction.onerror=rej});for(const r of mapped)await idbPut('master',r);state.master=await idbAll('master');updateMasterStatus();alert(`已匯入 ${state.master.length} 筆。歷史入庫紀錄未刪除。`)};
-function parseCSV(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return[];const parse=l=>{let a=[],s='',q=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"'){if(q&&l[i+1]==='"'){s+='"';i++}else q=!q}else if(c===','&&!q){a.push(s);s=''}else s+=c}a.push(s);return a};const h=parse(lines[0]);return lines.slice(1).map(l=>Object.fromEntries(parse(l).map((v,i)=>[h[i]||`c${i}`,v])))}
+$('#masterInput').onchange=e=>{const f=e.target.files[0]||null;state.pendingMasterFile=f;$('#importMasterBtn').disabled=!f;if(f){$('#masterStatus').textContent=`已選擇：${f.name}。尚未匯入；請按「匯入更新資料 / Import Data」。`}else{updateMasterStatus()}};
+$('#importMasterBtn').onclick=async()=>{const f=state.pendingMasterFile;if(!f){alert('請先選擇 CSV / Pilih CSV terlebih dahulu');return}try{const text=await f.text();const parsed=parseCSVWithHeaders(text);if(!parsed.rows.length){alert('CSV 無資料 / CSV kosong');return}const check=validateMasterHeaders(parsed.headers);if(!check.ok){alert('CSV 欄位不完整，未匯入。\n缺少 / Kurang: '+check.missing.join('、'));return}const mapped=parsed.rows.map(mapMasterRow);const invalid=mapped.filter(r=>!r.boxNo||!r.partNo||r.orderQty===null||!r.poNo||r.boxQty===null||r.nw===null||r.gw===null);if(invalid.length){alert(`CSV 有 ${invalid.length} 筆資料缺少必要值，未匯入。\n請先修正 CSV。`);return}const byBox=new Map();for(const r of mapped)byBox.set(r.boxNo,r);const clean=[...byBox.values()];const dbtx=state.db.transaction('master','readwrite');const store=dbtx.objectStore('master');store.clear();for(const r of clean)store.put(r);await new Promise((res,rej)=>{dbtx.oncomplete=res;dbtx.onerror=()=>rej(dbtx.error);dbtx.onabort=()=>rej(dbtx.error)});state.master=await idbAll('master');const meta={filename:f.name,count:state.master.length,importedAt:new Date().toISOString()};state.settings.masterImportMeta=meta;await idbPut('settings',{key:'masterImportMeta',value:meta});state.pendingMasterFile=null;$('#masterInput').value='';$('#importMasterBtn').disabled=true;updateMasterStatus();alert(`✅ 匯入成功：${state.master.length} 筆\n歷史入庫紀錄與照片均未刪除。`)}catch(err){console.error(err);alert('匯入失敗，原有比對資料與歷史紀錄均未變更。\n'+(err?.message||err))}};
+function parseCSVWithHeaders(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return{headers:[],rows:[]};const parse=l=>{let a=[],s='',q=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"'){if(q&&l[i+1]==='"'){s+='"';i++}else q=!q}else if(c===','&&!q){a.push(s);s=''}else s+=c}a.push(s);return a};const headers=parse(lines[0]).map(x=>x.trim());const rows=lines.slice(1).map(l=>Object.fromEntries(parse(l).map((v,i)=>[headers[i]||`c${i}`,v])));return{headers,rows}}
+function headerKey(k){return String(k||'').toLowerCase().replace(/[\s._'()\-]/g,'')}
+function validateMasterHeaders(headers){const keys=headers.map(headerKey);const required=[['Box No.',['boxno','箱號','箱号']],['Part No.',['partno','料號','料号']],["Order Q'ty",['orderqty','訂單數量','订单数量']],['PO No.',['pono','po','採購單號','采购单号']],["Box Q'ty",['boxqty','箱數量','箱数量']],['N.W. (KG)',['nwkg','nw','netweight','淨重','净重']],['G.W. (KG)',['gwkg','gw','grossweight','毛重']]];const missing=required.filter(([,aliases])=>!aliases.some(a=>keys.includes(a))).map(([name])=>name);return{ok:missing.length===0,missing}}
 function pick(o,names){for(const [k,v] of Object.entries(o)){const nk=k.toLowerCase().replace(/[\s._'()-]/g,'');if(names.includes(nk))return v}return''}
 function mapMasterRow(o){return{boxNo:normId(pick(o,['boxno','箱號','箱号'])),partNo:normId(pick(o,['partno','料號','料号'])),orderQty:num(pick(o,['orderqty','orderqty','訂單數量','订单数量'])),poNo:normId(pick(o,['pono','po','採購單號','采购单号'])),boxQty:num(pick(o,['boxqty','箱數量','箱数量'])),nw:num(pick(o,['nwkg','nw','netweight','淨重','净重'])),gw:num(pick(o,['gwkg','gw','grossweight','毛重']))}}
-function updateMasterStatus(){$('#masterStatus').textContent=state.master.length?`已載入 ${state.master.length} 筆比對資料；更新不會刪除歷史紀錄。`:'尚未匯入比對資料。請先由主管匯入 CSV。'}
+function updateMasterStatus(){const m=state.settings.masterImportMeta;if(state.master.length&&m){const t=new Date(m.importedAt);$('#masterStatus').innerHTML=`✅ 已匯入 ${state.master.length} 筆｜${escapeHTML(m.filename||'CSV')}｜${t.toLocaleString('zh-TW')}<br>重新匯入只更新比對母資料，不會刪除歷史入庫紀錄與照片。`}else if(state.master.length){$('#masterStatus').textContent=`✅ 已載入 ${state.master.length} 筆比對資料；更新不會刪除歷史紀錄。`}else{$('#masterStatus').textContent='尚未匯入比對資料。請先選擇 CSV，再按「匯入更新資料」。'}}
 
 $('#rebuildBtn').onclick=async()=>{if(!confirm('重新整理棧板？歷史資料不會刪除。'))return;const pass=state.records.filter(r=>r.status==='PASS').sort((a,b)=>a.timestamp.localeCompare(b.timestamp));const tmp=[];for(const r of pass){const saved=state.records;state.records=tmp;const loc=assignPallet(r);state.records=saved;r.location=loc;r.palletNo=palletNoFromLoc(loc);r.groupKey=groupKey(r);tmp.push(r);await idbPut('records',r)}renderPallets();renderHistory();alert('棧板整理完成，歷史資料均保留。')};
 $('#exportBtn').onclick=()=>exportCSV();$('#backupBtn').onclick=()=>backupJSON();
