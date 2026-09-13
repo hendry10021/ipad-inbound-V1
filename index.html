@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0f3b64" />
+<link rel="manifest" href="manifest.json" />
+<title>線邊棧板入庫 V1</title>
+<style>
+:root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
+*{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{position:sticky;top:0;z-index:5;background:#0f3b64;color:#fff;padding:14px 18px;display:flex;gap:10px;align-items:center;justify-content:space-between} header h1{font-size:19px;margin:0} header small{opacity:.9}
+main{max-width:980px;margin:auto;padding:14px 14px 110px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 5px 18px rgba(20,50,80,.06)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+button,.btn{border:0;border-radius:14px;padding:14px 16px;font-size:17px;font-weight:700;cursor:pointer;background:var(--blue);color:#fff;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none} button.secondary{background:#e8f0f7;color:#17324d} button.danger{background:var(--red)} button.green{background:var(--green)} button:disabled{opacity:.45}
+.big{font-size:24px;padding:20px;width:100%}.status{border-radius:18px;padding:18px;text-align:center}.status.pass{background:#e9f7ef;border:2px solid #83c9a2;color:#075b32}.status.fail{background:#fff0ef;border:2px solid #efa39d;color:#8e231c}.status.wait{background:#eef5fb;border:2px solid #aecbe1;color:#17496f}.location{font-size:42px;font-weight:900;letter-spacing:1px;margin:10px 0}
+.field{display:grid;grid-template-columns:1.1fr 1fr 1fr .6fr;gap:6px;padding:9px 0;border-bottom:1px solid #edf1f4;align-items:center}.field b{font-size:14px}.ok{color:var(--green);font-weight:800}.ng{color:var(--red);font-weight:800}.muted{color:var(--muted)}
+img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;border-radius:14px}.tabs{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr);z-index:6;padding-bottom:env(safe-area-inset-bottom)}.tabs button{border-radius:0;background:#fff;color:#486279;padding:10px 4px;font-size:12px}.tabs button.active{color:var(--blue);font-weight:900}.hide{display:none!important}.pill{display:inline-block;border-radius:999px;padding:5px 9px;background:#eaf2f8;color:#214b70;font-size:12px;font-weight:700}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:1}.row .tight{flex:0 0 auto}.note{font-size:13px;color:var(--muted);line-height:1.55}.history-item{border:1px solid var(--line);border-radius:14px;padding:12px;margin:8px 0}.history-item h3{margin:0 0 6px;font-size:16px}.history-item .meta{font-size:12px;color:var(--muted)}input,select{width:100%;padding:12px;border:1px solid #bfcbd6;border-radius:12px;font-size:16px;background:#fff}label{font-size:13px;font-weight:700;color:#445b70}.setting{margin:10px 0}.warn{background:#fff7e8;border:1px solid #efcf8c;padding:12px;border-radius:12px;color:#6c4b00}.camera-frame{border:3px dashed #71a6cd;border-radius:16px;padding:10px;background:#eef7ff;text-align:center}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.spinner{display:inline-block;width:18px;height:18px;border:3px solid #b8c9d8;border-top-color:#0f5b92;border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header><div><h1>📦 線邊棧板入庫 V1</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<main>
+<section id="scanView">
+  <div class="card">
+    <div class="camera-frame">
+      <h2>📷 一次拍攝外箱 + 標籤<br><small>Foto kotak + label sekali</small></h2>
+      <p class="note">請讓「白色標籤」與「手寫 Box No.」同時清楚入鏡。<br>Pastikan label putih dan Box No. tulisan tangan terlihat jelas.</p>
+      <input id="photoInput" type="file" accept="image/*" capture="environment" class="hide" />
+      <button class="big" id="cameraBtn">📷 拍攝入庫 / Ambil Foto</button>
+    </div>
+  </div>
+  <div class="card hide" id="photoCard"><img id="preview" class="preview" alt="preview"></div>
+  <div class="card hide" id="ocrCard">
+    <div class="row"><h3 style="margin:0;flex:1">辨識與 7/7 比對 / OCR & Verifikasi</h3><span id="ocrState" class="pill">等待</span></div>
+    <div id="fields"></div>
+  </div>
+  <div id="resultCard" class="card hide"></div>
+</section>
+
+<section id="historyView" class="hide">
+  <div class="card"><h2>🔎 入庫履歷 / Riwayat</h2><div class="row"><input id="historySearch" placeholder="Box No. / Part No. / PO No."><button class="tight secondary" id="exportBtn">匯出</button></div><div id="historyList"></div></div>
+</section>
+
+<section id="palletView" class="hide">
+  <div class="card"><h2>📦 線邊棧板 / Palet Line-side</h2><div id="palletList"></div></div>
+</section>
+
+<section id="adminView" class="hide">
+  <div class="card"><h2>⚙️ 主管模式 / Mode Supervisor</h2><div id="adminGate"><label>主管 PIN / PIN Supervisor</label><div class="row"><input id="pin" type="password" inputmode="numeric" placeholder="PIN"><button class="tight" id="unlockBtn">解鎖</button></div><p class="note">V1 預設 PIN：2468。正式版請更換並改用帳號/Face ID。</p></div><div id="adminPanel" class="hide">
+    <div class="setting"><label>匯入「更新資料」CSV / Import data pembanding</label><input id="masterInput" type="file" accept=".csv,text/csv"><p class="note" id="masterStatus">尚未匯入</p></div>
+    <div class="setting"><label>棧板重量上限 KG / Batas berat palet</label><input id="limitKg" type="number" value="3000" min="1" step="0.1"></div>
+    <div class="setting"><label>棧板分組 / Pengelompokan</label><select id="groupMode"><option value="customer">客戶代碼 / Kode pelanggan</option><option value="customerPart">客戶代碼 + Part No.</option></select></div>
+    <div class="grid"><button id="rebuildBtn">🔄 棧板整理 / Atur Ulang</button><button class="secondary" id="backupBtn">💾 完整備份 / Backup</button></div>
+    <div class="warn" style="margin-top:12px">⚠️ 「更新」只重新比對，不會刪除任何歷史入庫紀錄。只有主管明確執行「刪除此筆」才刪除。</div>
+  </div></div>
+</section>
+</main>
+<nav class="tabs"><button data-view="scanView" class="active">📷<br>掃描</button><button data-view="historyView">🔎<br>履歷</button><button data-view="palletView">📦<br>棧板</button><button data-view="adminView">⚙️<br>主管</button></nav>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const FIELDS=[['boxNo','Box No.'],['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W. (KG)'],['gw','G.W. (KG)']];
+const $=s=>document.querySelector(s); const $$=s=>[...document.querySelectorAll(s)];
+const state={master:[],records:[],settings:{limitKg:3000,groupMode:'customer'},db:null,photoBlob:null,ocr:{},match:null};
+setInterval(()=>$('#clock').textContent=new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}),1000);
+
+function normText(v){return String(v??'').trim().replace(/\s+/g,' ').replace(/[，,]/g,'');}
+function normId(v){return normText(v).replace(/\s/g,'').replace(/[‐‑–—]/g,'-');}
+function num(v){const n=parseFloat(String(v??'').replace(/[^0-9.\-]/g,'')); return Number.isFinite(n)?n:null}
+function customerCode(box){box=normId(box); if(/^[A-Za-z]/.test(box))return box[0]; if(/^[0-9][A-Za-z]/.test(box))return box.slice(0,2); return 'NUM'}
+function groupKey(row){return state.settings.groupMode==='customerPart'?customerCode(row.boxNo)+'|'+row.partNo:customerCode(row.boxNo)}
+
+function openDB(){return new Promise((res,rej)=>{const req=indexedDB.open('InboundV1',1);req.onupgradeneeded=e=>{const db=e.target.result; if(!db.objectStoreNames.contains('records')) db.createObjectStore('records',{keyPath:'id'}); if(!db.objectStoreNames.contains('master')) db.createObjectStore('master',{keyPath:'boxNo'}); if(!db.objectStoreNames.contains('settings')) db.createObjectStore('settings',{keyPath:'key'})};req.onsuccess=e=>res(e.target.result);req.onerror=()=>rej(req.error)})}
+function tx(store,mode='readonly'){return state.db.transaction(store,mode).objectStore(store)}
+function idbAll(store){return new Promise((res,rej)=>{const r=tx(store).getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+function idbPut(store,v){return new Promise((res,rej)=>{const r=tx(store,'readwrite').put(v);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+function idbDel(store,k){return new Promise((res,rej)=>{const r=tx(store,'readwrite').delete(k);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+
+async function boot(){state.db=await openDB();state.records=await idbAll('records');state.master=await idbAll('master');const ss=await idbAll('settings');for(const s of ss)state.settings[s.key]=s.value;$('#limitKg').value=state.settings.limitKg||3000;$('#groupMode').value=state.settings.groupMode||'customer';renderHistory();renderPallets();updateMasterStatus();}
+
+$$('.tabs button').forEach(b=>b.onclick=()=>{const v=b.dataset.view;['scanView','historyView','palletView','adminView'].forEach(id=>$('#'+id).classList.toggle('hide',id!==v));$$('.tabs button').forEach(x=>x.classList.toggle('active',x===b)); if(v==='historyView')renderHistory();if(v==='palletView')renderPallets();});
+$('#cameraBtn').onclick=()=>$('#photoInput').click();
+$('#photoInput').onchange=async e=>{const f=e.target.files[0]; if(!f)return; state.photoBlob=f; $('#preview').src=URL.createObjectURL(f);$('#photoCard').classList.remove('hide');$('#ocrCard').classList.remove('hide');$('#resultCard').classList.add('hide'); await runOCR(f)};
+
+async function runOCR(file){setOCRState('辨識中…','wait');renderFields({});try{if(!window.Tesseract)throw new Error('OCR engine unavailable');const {data}=await Tesseract.recognize(file,'eng',{logger:m=>{if(m.status==='recognizing text')setOCRState('OCR '+Math.round((m.progress||0)*100)+'%','wait')}});const raw=data.text||'';state.ocr=parseOCR(raw);state.ocr.raw=raw; const cmp=compareWithMaster(state.ocr);state.match=cmp;renderFields(cmp);renderResult(cmp);}catch(err){setOCRState('辨識失敗','fail');$('#resultCard').classList.remove('hide');$('#resultCard').innerHTML=`<div class="status fail"><h2>⛔ 辨識失敗 / OCR gagal</h2><p>請重新拍攝，保持標籤正面、清楚、避免反光。<br>Foto ulang: lurus, jelas, hindari pantulan.</p><div class="note mono">${escapeHTML(err.message)}</div></div>`}}
+function setOCRState(t,c){$('#ocrState').textContent=t;$('#ocrState').className='pill '+(c||'')}
+
+function parseOCR(text){const t=text.replace(/\r/g,'\n');const flat=t.replace(/[|]/g,' ');const lines=t.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  const get=(patterns)=>{for(const re of patterns){const m=flat.match(re);if(m&&m[1])return m[1].trim()}return ''};
+  let partNo=get([/PART\s*NO\.?\s*[:#-]?\s*([A-Z0-9._\/-]+)/i,/PART\s*NUMBER\s*[:#-]?\s*([A-Z0-9._\/-]+)/i]);
+  let orderQty=get([/ORDER\s*Q(?:'|’)?TY\s*[:#-]?\s*([0-9,.]+)/i,/ORDER\s*QTY\s*[:#-]?\s*([0-9,.]+)/i]);
+  let poNo=get([/PO\s*NO\.?\s*[:#-]?\s*([A-Z0-9._\/-]+)/i,/P\.O\.?\s*NO\.?\s*[:#-]?\s*([A-Z0-9._\/-]+)/i]);
+  let boxQty=get([/BOX\s*Q(?:'|’)?TY\s*[:#-]?\s*([0-9,.]+)/i,/BOX\s*QTY\s*[:#-]?\s*([0-9,.]+)/i]);
+  let nw=get([/N\.?\s*W\.?\s*(?:\(?(?:KG|KGS)\)?)?\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i,/NET\s*WEIGHT\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i]);
+  let gw=get([/G\.?\s*W\.?\s*(?:\(?(?:KG|KGS)\)?)?\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i,/GROSS\s*WEIGHT\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i]);
+  // Box No: prefer an exact master Box No appearing anywhere in OCR text. This is safer than guessing from handwriting.
+  const compact=flat.replace(/\s/g,''); let boxNo='';
+  const candidates=state.master.map(x=>x.boxNo).filter(Boolean).sort((a,b)=>b.length-a.length);
+  for(const b of candidates){if(compact.includes(normId(b))){boxNo=b;break}}
+  if(!boxNo){const tokens=lines.join(' ').match(/\b[0-9]{1,2}[A-Za-z][0-9A-Za-z-]{1,12}\b|\b[A-Za-z][0-9A-Za-z-]{2,12}\b/g)||[];boxNo=tokens.find(x=>!/PART|ORDER|BOX|NET|GROSS|PO/i.test(x))||''}
+  return {boxNo:normId(boxNo),partNo:normId(partNo),orderQty:num(orderQty),poNo:normId(poNo),boxQty:num(boxQty),nw:num(nw),gw:num(gw)};
+}
+
+function compareWithMaster(ocr){const master=state.master.find(r=>normId(r.boxNo)===normId(ocr.boxNo));const result={ocr,master,rows:[],pass:false};
+  if(!master){for(const [k,label] of FIELDS)result.rows.push({k,label,ocr:ocr[k],master:'—',ok:false});return result}
+  for(const [k,label] of FIELDS){let ok=false;const a=ocr[k],b=master[k];if(['orderQty','boxQty','nw','gw'].includes(k)){const na=num(a),nb=num(b);ok=na!==null&&nb!==null&&Math.abs(na-nb)<0.001}else ok=normId(a)===normId(b);result.rows.push({k,label,ocr:a,master:b,ok})}
+  result.pass=result.rows.every(x=>x.ok) && num(ocr.gw)>=num(ocr.nw); return result}
+function renderFields(cmp){const rows=cmp.rows||FIELDS.map(([k,l])=>({label:l,ocr:'',master:'',ok:null}));$('#fields').innerHTML='<div class="field muted"><b>欄位</b><span>鏡頭辨識</span><span>更新資料</span><span>結果</span></div>'+rows.map(r=>`<div class="field"><b>${r.label}</b><span class="mono">${fmt(r.ocr)}</span><span class="mono">${fmt(r.master)}</span><span class="${r.ok===true?'ok':r.ok===false?'ng':'muted'}">${r.ok===true?'✓':r.ok===false?'✕':'—'}</span></div>`).join('')}
+function fmt(v){return v===null||v===undefined||v===''?'—':escapeHTML(String(v))}
+
+async function renderResult(cmp){$('#resultCard').classList.remove('hide');if(cmp.pass){const dup=state.records.some(r=>r.status==='PASS'&&normId(r.boxNo)===normId(cmp.master.boxNo));if(dup){$('#resultCard').innerHTML=`<div class="status fail"><h2>⛔ 重複箱號 / Box duplikat</h2><p>${escapeHTML(cmp.master.boxNo)} 已有成功入庫紀錄。<br>Sudah pernah diterima.</p><p>請找主管 / Hubungi supervisor</p></div>`;setOCRState('重複','fail');await saveAttempt(cmp,'DUPLICATE','');return}
+  const loc=assignPallet(cmp.master);setOCRState('7/7 PASS','pass');$('#resultCard').innerHTML=`<div class="status pass"><h2>✅ 入庫成功 / Berhasil</h2><p>請放到 / Letakkan di</p><div class="location">${escapeHTML(loc)}</div><button class="green big" id="confirmPut">✓ 已放置 / Sudah diletakkan</button></div>`;$('#confirmPut').onclick=async()=>{await saveAttempt(cmp,'PASS',loc);$('#confirmPut').disabled=true;$('#confirmPut').textContent='已保存 / Tersimpan';renderPallets()}}
+ else {setOCRState(cmp.master?'未通過':'找不到 Box No.','fail');const bad=cmp.rows.filter(x=>!x.ok).map(x=>x.label).join('、');$('#resultCard').innerHTML=`<div class="status fail"><h2>⛔ 停止 / BERHENTI</h2><p>${cmp.master?'資料不一致 / Data tidak cocok':'找不到 Box No. / Box No. tidak ditemukan'}</p><p><b>${escapeHTML(bad||'Box No.')}</b></p><button class="big danger" id="retryBtn">📷 重新拍攝 / Foto ulang</button><p>第二次仍失敗：請找主管 / Hubungi supervisor</p></div>`;$('#retryBtn').onclick=()=>$('#photoInput').click();await saveAttempt(cmp,'NG','')}
+}
+function assignPallet(row){const g=groupKey(row),limit=Number(state.settings.limitKg)||3000,gw=num(row.gw)||0;const pass=state.records.filter(r=>r.status==='PASS'&&r.groupKey===g);const totals={};pass.forEach(r=>totals[r.palletNo]=(totals[r.palletNo]||0)+(num(r.gw)||0));let best=null,bestTotal=-1;for(const [p,t] of Object.entries(totals)){if(t+gw<=limit&&t>bestTotal){best=Number(p);bestTotal=t}}if(best===null)best=Math.max(0,...Object.keys(totals).map(Number))+1;const cust=customerCode(row.boxNo);return state.settings.groupMode==='customerPart'?`${cust}-${row.partNo}-棧板${String(best).padStart(2,'0')}`:`${cust}-棧板${String(best).padStart(2,'0')}`}
+function palletNoFromLoc(loc){const m=String(loc).match(/棧板(\d+)/);return m?Number(m[1]):0}
+
+async function saveAttempt(cmp,status,loc){const id=crypto.randomUUID(),now=new Date();const photo=state.photoBlob?await blobToDataURL(state.photoBlob):'';const src=cmp.master||cmp.ocr;const rec={id,timestamp:now.toISOString(),status,location:loc,palletNo:palletNoFromLoc(loc),groupKey:cmp.master?groupKey(cmp.master):'',boxNo:src.boxNo||cmp.ocr.boxNo,partNo:src.partNo||cmp.ocr.partNo,orderQty:src.orderQty??cmp.ocr.orderQty,poNo:src.poNo||cmp.ocr.poNo,boxQty:src.boxQty??cmp.ocr.boxQty,nw:src.nw??cmp.ocr.nw,gw:src.gw??cmp.ocr.gw,ocr:cmp.ocr,compareRows:cmp.rows,photo};await idbPut('records',rec);state.records.push(rec)}
+function blobToDataURL(blob){return new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(blob)})}
+
+function renderHistory(){const q=normId($('#historySearch')?.value||'').toLowerCase();const list=[...state.records].sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).filter(r=>!q||[r.boxNo,r.partNo,r.poNo].some(x=>String(x).toLowerCase().includes(q)));$('#historyList').innerHTML=list.length?list.map(r=>`<div class="history-item"><h3>${badge(r.status)} ${escapeHTML(r.boxNo||'—')} <span class="pill">${escapeHTML(r.location||'無儲位')}</span></h3><div>${escapeHTML(r.partNo||'')} · PO ${escapeHTML(r.poNo||'')}</div><div class="meta">${new Date(r.timestamp).toLocaleString('zh-TW')} · N.W ${fmt(r.nw)} · G.W ${fmt(r.gw)}</div><div class="row" style="margin-top:8px"><button class="secondary tight" onclick="showPhoto('${r.id}')">照片 / Foto</button>${$('#adminPanel')&&!$('#adminPanel').classList.contains('hide')?`<button class="danger tight" onclick="deleteRecord('${r.id}')">刪除此筆</button>`:''}</div></div>`).join(''):'<p class="note">尚無紀錄 / Belum ada data</p>'}
+function badge(s){return s==='PASS'?'✅':s==='NG'?'⛔':'⚠️'}
+$('#historySearch').oninput=renderHistory;
+window.showPhoto=id=>{const r=state.records.find(x=>x.id===id);if(r?.photo){const w=open();w.document.write(`<img src="${r.photo}" style="max-width:100%"><pre>${escapeHTML(JSON.stringify(r.ocr,null,2))}</pre>`)}else alert('沒有照片 / Tidak ada foto')};
+window.deleteRecord=async id=>{if(!confirm('確定刪除此筆？\nYakin hapus data ini?'))return;await idbDel('records',id);state.records=state.records.filter(r=>r.id!==id);renderHistory();renderPallets()};
+
+function renderPallets(){const limit=Number(state.settings.limitKg)||3000;const map={};state.records.filter(r=>r.status==='PASS').forEach(r=>{const k=r.location||'未指定';if(!map[k])map[k]={count:0,gw:0,last:r.timestamp};map[k].count++;map[k].gw+=num(r.gw)||0;if(r.timestamp>map[k].last)map[k].last=r.timestamp});$('#palletList').innerHTML=Object.keys(map).length?Object.entries(map).sort().map(([k,v])=>`<div class="history-item"><h3>📦 ${escapeHTML(k)}</h3><div>${v.count} 箱 · ${v.gw.toFixed(2)} / ${limit.toFixed(2)} KG</div><div class="meta">剩餘 ${(limit-v.gw).toFixed(2)} KG · 最後 ${new Date(v.last).toLocaleString('zh-TW')}</div></div>`).join(''):'<p class="note">尚無棧板資料 / Belum ada data palet</p>'}
+
+$('#unlockBtn').onclick=()=>{if($('#pin').value==='2468'){$('#adminGate').classList.add('hide');$('#adminPanel').classList.remove('hide');renderHistory()}else alert('PIN 錯誤')};
+$('#limitKg').onchange=async()=>{state.settings.limitKg=Number($('#limitKg').value)||3000;await idbPut('settings',{key:'limitKg',value:state.settings.limitKg});renderPallets()};
+$('#groupMode').onchange=async()=>{state.settings.groupMode=$('#groupMode').value;await idbPut('settings',{key:'groupMode',value:state.settings.groupMode})};
+$('#masterInput').onchange=async e=>{const f=e.target.files[0];if(!f)return;const text=await f.text();const rows=parseCSV(text);if(!rows.length){alert('CSV 無資料');return}const mapped=rows.map(mapMasterRow).filter(x=>x.boxNo);const store=tx('master','readwrite');store.clear();await new Promise((res,rej)=>{store.transaction.oncomplete=res;store.transaction.onerror=rej});for(const r of mapped)await idbPut('master',r);state.master=await idbAll('master');updateMasterStatus();alert(`已匯入 ${state.master.length} 筆。歷史入庫紀錄未刪除。`)};
+function parseCSV(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return[];const parse=l=>{let a=[],s='',q=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"'){if(q&&l[i+1]==='"'){s+='"';i++}else q=!q}else if(c===','&&!q){a.push(s);s=''}else s+=c}a.push(s);return a};const h=parse(lines[0]);return lines.slice(1).map(l=>Object.fromEntries(parse(l).map((v,i)=>[h[i]||`c${i}`,v])))}
+function pick(o,names){for(const [k,v] of Object.entries(o)){const nk=k.toLowerCase().replace(/[\s._'()-]/g,'');if(names.includes(nk))return v}return''}
+function mapMasterRow(o){return{boxNo:normId(pick(o,['boxno','箱號','箱号'])),partNo:normId(pick(o,['partno','料號','料号'])),orderQty:num(pick(o,['orderqty','orderqty','訂單數量','订单数量'])),poNo:normId(pick(o,['pono','po','採購單號','采购单号'])),boxQty:num(pick(o,['boxqty','箱數量','箱数量'])),nw:num(pick(o,['nwkg','nw','netweight','淨重','净重'])),gw:num(pick(o,['gwkg','gw','grossweight','毛重']))}}
+function updateMasterStatus(){$('#masterStatus').textContent=state.master.length?`已載入 ${state.master.length} 筆比對資料；更新不會刪除歷史紀錄。`:'尚未匯入比對資料。請先由主管匯入 CSV。'}
+
+$('#rebuildBtn').onclick=async()=>{if(!confirm('重新整理棧板？歷史資料不會刪除。'))return;const pass=state.records.filter(r=>r.status==='PASS').sort((a,b)=>a.timestamp.localeCompare(b.timestamp));const tmp=[];for(const r of pass){const saved=state.records;state.records=tmp;const loc=assignPallet(r);state.records=saved;r.location=loc;r.palletNo=palletNoFromLoc(loc);r.groupKey=groupKey(r);tmp.push(r);await idbPut('records',r)}renderPallets();renderHistory();alert('棧板整理完成，歷史資料均保留。')};
+$('#exportBtn').onclick=()=>exportCSV();$('#backupBtn').onclick=()=>backupJSON();
+function exportCSV(){const h=['timestamp','status','Box No.','Part No.',"Order Q'ty",'PO No.',"Box Q'ty",'N.W.','G.W.','location'];const rows=state.records.map(r=>[r.timestamp,r.status,r.boxNo,r.partNo,r.orderQty,r.poNo,r.boxQty,r.nw,r.gw,r.location]);download('inbound_history_'+stamp()+'.csv',[h,...rows].map(a=>a.map(csvCell).join(',')).join('\n'),'text/csv')}
+function backupJSON(){download('inbound_full_backup_'+stamp()+'.json',JSON.stringify({exportedAt:new Date().toISOString(),settings:state.settings,master:state.master,records:state.records},null,2),'application/json')}
+function stamp(){return new Date().toISOString().replace(/[:.]/g,'-');}
+function csvCell(v){v=String(v??'');return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}
+function download(name,data,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000)}
+function escapeHTML(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+boot();
+</script>
+</body></html>

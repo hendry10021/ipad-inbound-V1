@@ -1,0 +1,9 @@
+{
+  "name":"iPad mini 線邊棧板入庫 V1",
+  "short_name":"線邊入庫",
+  "start_url":"./index.html",
+  "display":"standalone",
+  "background_color":"#f4f7fb",
+  "theme_color":"#0f3b64",
+  "icons":[]
+}
