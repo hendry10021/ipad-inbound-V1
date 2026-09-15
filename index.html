@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.2</title>
+<title>線邊棧板入庫 V1.3</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.2</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.3</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -94,9 +94,22 @@ $('#resetCaptureBtn').onclick=()=>resetCapture();
 $('#labelPhotoInput').onchange=async e=>{const f=e.target.files[0];if(!f)return;state.transactionId=crypto.randomUUID();state.labelPhotoBlob=f;state.boxPhotoBlob=null;state.labelOCR={};state.boxOCR={};state.ocr={};state.match=null;$('#labelPreview').src=URL.createObjectURL(f);$('#labelPhotoCard').classList.remove('hide');$('#boxPhotoCard').classList.add('hide');$('#ocrCard').classList.remove('hide');$('#resultCard').classList.add('hide');setOCRState('標籤辨識中…','wait');renderFields({});try{const parsed=await recognizeLabel(f);state.labelOCR=parsed;setOCRState('標籤完成，請拍箱號','wait');$('#captureTitle').innerHTML='② ✍️ 拍手寫 Box No.<br><small>Foto nomor kotak tulisan tangan</small>';$('#captureNote').innerHTML='請移到箱子的另一側，只拍清楚的手寫 Box No.。<br>Pindah ke sisi lain dan foto Box No. tulisan tangan dengan jelas.';$('#labelCameraBtn').classList.add('hide');$('#boxCameraBtn').classList.remove('hide');$('#resetCaptureBtn').classList.remove('hide');renderPartialLabel(parsed)}catch(err){showOCRError(err,'標籤')}};
 $('#boxPhotoInput').onchange=async e=>{const f=e.target.files[0];if(!f)return;state.boxPhotoBlob=f;$('#boxPreview').src=URL.createObjectURL(f);$('#boxPhotoCard').classList.remove('hide');$('#resultCard').classList.add('hide');setOCRState('箱號辨識中…','wait');try{const box=await recognizeBoxNo(f);state.boxOCR=box;state.ocr={...state.labelOCR,boxNo:box.boxNo,rawLabel:state.labelOCR.raw||'',rawBox:box.raw||''};const cmp=compareWithMaster(state.ocr);state.match=cmp;renderFields(cmp);await renderResult(cmp)}catch(err){showOCRError(err,'箱號')}};
 function resetCapture(){state.labelPhotoBlob=null;state.boxPhotoBlob=null;state.labelOCR={};state.boxOCR={};state.ocr={};state.match=null;state.transactionId=null;$('#labelPhotoInput').value='';$('#boxPhotoInput').value='';$('#labelPhotoCard').classList.add('hide');$('#boxPhotoCard').classList.add('hide');$('#ocrCard').classList.add('hide');$('#resultCard').classList.add('hide');$('#labelCameraBtn').classList.remove('hide');$('#boxCameraBtn').classList.add('hide');$('#resetCaptureBtn').classList.add('hide');$('#captureTitle').innerHTML='① 📷 拍白色標籤<br><small>Foto label putih</small>';$('#captureNote').innerHTML="請靠近並正對白色標籤，讓 Part No.、Order Q'ty、PO No.、Box Q'ty、N.W.、G.W. 清楚入鏡。<br>Dekatkan kamera dan foto label putih dengan jelas."}
-async function tesseractText(file,prefix){if(!window.Tesseract)throw new Error('OCR engine unavailable');const {data}=await Tesseract.recognize(file,'eng',{logger:m=>{if(m.status==='recognizing text')setOCRState(prefix+' '+Math.round((m.progress||0)*100)+'%','wait')}});return data.text||''}
-async function recognizeLabel(file){const raw=await tesseractText(file,'標籤 OCR');const p=parseOCR(raw);delete p.boxNo;p.raw=raw;return p}
-async function recognizeBoxNo(file){const raw=await tesseractText(file,'Box OCR');const compact=raw.replace(/\s/g,'');let boxNo='';const candidates=state.master.map(x=>x.boxNo).filter(Boolean).sort((a,b)=>b.length-a.length);for(const b of candidates){if(compact.toUpperCase().includes(normId(b).toUpperCase())){boxNo=b;break}}if(!boxNo){const tokens=(raw.match(/\b[0-9]{1,2}[A-Za-z][0-9A-Za-z-]{1,12}\b|\b[A-Za-z][0-9A-Za-z-]{2,12}\b/g)||[]);boxNo=tokens[0]||''}return{boxNo:normId(boxNo),raw}}
+async function prepareOCRImage(file,mode='label'){
+  const bmp=await createImageBitmap(file), maxW=mode==='box'?1400:1800;
+  const scale=Math.min(1,maxW/bmp.width), w=Math.max(1,Math.round(bmp.width*scale)), h=Math.max(1,Math.round(bmp.height*scale));
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(bmp,0,0,w,h);
+  const im=x.getImageData(0,0,w,h),d=im.data;
+  for(let i=0;i<d.length;i+=4){let g=.299*d[i]+.587*d[i+1]+.114*d[i+2];g=Math.max(0,Math.min(255,(g-128)*1.45+128));if(mode==='box')g=g>165?255:g<85?0:g;d[i]=d[i+1]=d[i+2]=g}
+  x.putImageData(im,0,0);return c;
+}
+async function tesseractText(file,prefix,mode='label'){
+  if(!window.Tesseract)throw new Error('OCR engine unavailable');
+  const image=await prepareOCRImage(file,mode);
+  const {data}=await Tesseract.recognize(image,'eng',{logger:m=>{if(m.status==='recognizing text')setOCRState(prefix+' '+Math.round((m.progress||0)*100)+'%','wait')}});
+  return data.text||''
+}
+async function recognizeLabel(file){const raw=await tesseractText(file,'標籤 OCR','label');const p=parseOCR(raw);delete p.boxNo;p.raw=raw;return p}
+async function recognizeBoxNo(file){const raw=await tesseractText(file,'Box OCR','box');const compact=raw.replace(/\s/g,'');let boxNo='';const candidates=state.master.map(x=>x.boxNo).filter(Boolean).sort((a,b)=>b.length-a.length);for(const b of candidates){if(compact.toUpperCase().includes(normId(b).toUpperCase())){boxNo=b;break}}if(!boxNo){const tokens=(raw.match(/\b[0-9]{1,2}[A-Za-z][0-9A-Za-z-]{1,12}\b|\b[A-Za-z][0-9A-Za-z-]{2,12}\b/g)||[]);boxNo=tokens[0]||''}return{boxNo:normId(boxNo),raw}}
 function renderPartialLabel(p){const rows=FIELDS.map(([k,l])=>({label:l,ocr:k==='boxNo'?'等待第2張照片':p[k],master:'—',ok:null}));renderFields({rows})}
 function showOCRError(err,stage){setOCRState(stage+'辨識失敗','fail');$('#resultCard').classList.remove('hide');$('#resultCard').innerHTML=`<div class="status fail"><h2>⛔ ${stage}辨識失敗 / OCR gagal</h2><p>請重新拍攝，保持畫面正面、清楚並避免反光。<br>Foto ulang: lurus, jelas, hindari pantulan.</p><div class="note mono">${escapeHTML(err.message)}</div></div>`}
 
@@ -110,6 +123,15 @@ function parseOCR(text){const t=text.replace(/\r/g,'\n');const flat=t.replace(/[
   let boxQty=get([/BOX\s*Q(?:'|’)?TY\s*[:#-]?\s*([0-9,.]+)/i,/BOX\s*QTY\s*[:#-]?\s*([0-9,.]+)/i]);
   let nw=get([/N\.?\s*W\.?\s*(?:\(?(?:KG|KGS)\)?)?\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i,/NET\s*WEIGHT\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i]);
   let gw=get([/G\.?\s*W\.?\s*(?:\(?(?:KG|KGS)\)?)?\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i,/GROSS\s*WEIGHT\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?)/i]);
+  // V1.3 fallback: tolerate OCR errors in printed field captions. The actual labels are numeric-heavy.
+  const numericTokens=(flat.match(/\b\d{3,12}\b/g)||[]);
+  const decimals=(flat.match(/\b\d{1,4}\.\d{1,3}\b/g)||[]).map(Number).filter(Number.isFinite);
+  if(!partNo){const c=numericTokens.filter(v=>v.length>=7);if(c.length)partNo=c[0]}
+  if(!orderQty){const c=numericTokens.filter(v=>v.length>=3&&v.length<=6&&v!==partNo);if(c.length)orderQty=c[0]}
+  if(!poNo){const c=numericTokens.filter(v=>v.length>=5&&v.length<=10&&v!==partNo&&v!==String(orderQty||''));if(c.length)poNo=c[0]}
+  if(!boxQty){const c=numericTokens.filter(v=>v.length>=2&&v.length<=5&&![partNo,String(orderQty||''),poNo].includes(v));if(c.length)boxQty=c[c.length-1]}
+  if(nw===null&&decimals.length)nw=decimals[0];
+  if(gw===null&&decimals.length>1)gw=decimals[1];
   return {boxNo:'',partNo:normId(partNo),orderQty:num(orderQty),poNo:normId(poNo),boxQty:num(boxQty),nw:num(nw),gw:num(gw)};
 }
 
