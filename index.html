@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.3.5</title>
+<title>線邊棧板入庫 V1.3.6</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.3.5</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.3.6</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -110,33 +110,32 @@ async function tesseractText(file,prefix,maxSide=1600){
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 async function recognizeLabel(file){
-  // V1.3.5: 固定格式白標籤採六區域獨立辨識；整張 OCR 僅作備援。
+  // V1.3.6: 先讀取整張照片的條碼/數字，再用更新資料鎖定同一張標籤；失敗才進六區 OCR。
+  // 這可避免現場拍攝角度稍有偏移時，固定裁切區把數字切掉。
+  const raws=[];
+  try{
+    setOCRState('① 條碼/標籤快速辨識…','wait');
+    const quick=await quickLabelFromPhoto(file); raws.push('QUICK: '+quick.raw);
+    if(quick.row){
+      const m=quick.row;
+      return {partNo:m.partNo,orderQty:m.orderQty,poNo:m.poNo,boxQty:m.boxQty,nw:m.nw,gw:m.gw,raw:raws.join('\n')};
+    }
+  }catch(e){console.warn('quick label',e)}
+
   const base=await prepareLabelCrop(file);
   const specs={
     partNo:[.22,.05,.60,.38], orderQty:[.02,.39,.48,.30], poNo:[.50,.39,.49,.30],
     boxQty:[.02,.69,.48,.29], nw:[.50,.69,.49,.15], gw:[.50,.84,.49,.15]
   };
-  const out={}; const raws=[];
-  let i=0;
+  const out={}; let i=0;
   for(const [key,r] of Object.entries(specs)){
     i++; setOCRState(`標籤分區 OCR ${i}/6`,'wait');
     try{
-      const c=cropCanvas(base,r, key==='partNo'?2.2:2.8);
+      const c=cropCanvas(base,r,key==='partNo'?2.2:2.8);
       const raw=await tesseractCanvasText(c,`標籤 ${i}/6`); raws.push(key+': '+raw);
       out[key]=parseRegionValue(key,raw);
     }catch(e){console.warn('region OCR',key,e);out[key]=''}
   }
-  // 用 master 資料對各區域做容錯校正；只在區域內看見該值時採用，避免跨欄誤配。
-  if(state.master.length){
-    const regionRaw=Object.fromEntries(raws.map(x=>{const j=x.indexOf(':');return [x.slice(0,j),x.slice(j+1)]}));
-    for(const key of Object.keys(specs)){
-      if(out[key]) continue;
-      const matches=[];
-      for(const m of state.master) if(valueSeen(regionRaw[key]||'',m[key])) matches.push(m[key]);
-      const uniq=[...new Set(matches.map(String))]; if(uniq.length===1) out[key]=matches[0];
-    }
-  }
-  // 若仍缺欄，再做一次整體解析與既有 master 輔助。
   if(labelMissing(out).length){
     try{
       const rawAll=await tesseractCanvasText(base,'標籤整體備援'); raws.push('ALL: '+rawAll);
@@ -146,6 +145,42 @@ async function recognizeLabel(file){
     }catch(e){console.warn('fallback OCR',e)}
   }
   out.raw=raws.join('\n'); return out
+}
+async function quickLabelFromPhoto(file){
+  let codes=[];
+  // Safari/iPadOS 若支援 BarcodeDetector，優先直接解四個印刷條碼。
+  if('BarcodeDetector' in window){
+    try{
+      const formats=await BarcodeDetector.getSupportedFormats();
+      const wanted=['code_128','code_39','codabar','ean_13','ean_8','itf'].filter(x=>formats.includes(x));
+      const detector=new BarcodeDetector(wanted.length?{formats:wanted}:undefined);
+      const bmp=await createImageBitmap(file); const found=await detector.detect(bmp); bmp.close?.();
+      codes=found.map(x=>String(x.rawValue||'').trim()).filter(Boolean);
+    }catch(e){console.warn('BarcodeDetector',e)}
+  }
+  // 同時做一次整張 OCR；只拿來尋找更新資料中的已知值，不直接猜欄位。
+  let raw='';
+  try{raw=await tesseractText(file,'標籤整體 OCR',2200)}catch(e){console.warn('full OCR',e)}
+  const hay=(codes.join(' ')+' '+raw).toUpperCase();
+  const compact=hay.replace(/[^A-Z0-9.]/g,'');
+  const seen=v=>{
+    if(v===null||v===undefined||v==='')return false;
+    const a=String(v).toUpperCase().replace(/[^A-Z0-9.]/g,'');
+    const d=String(v).replace(/[^0-9]/g,'').replace(/^0+(?=\d)/,'');
+    const hc=compact.replace(/[^A-Z0-9]/g,'');
+    return (a&&compact.includes(a)) || (d&&hc.includes(d));
+  };
+  let best=null,bestScore=-1,bestHits=0,bestKey=0;
+  for(const m of state.master){
+    const hit={partNo:seen(m.partNo),orderQty:seen(m.orderQty),poNo:seen(m.poNo),boxQty:seen(m.boxQty),nw:seen(m.nw),gw:seen(m.gw)};
+    const hits=Object.values(hit).filter(Boolean).length;
+    const keyHits=[hit.partNo,hit.poNo,hit.orderQty,hit.boxQty].filter(Boolean).length;
+    const score=(hit.partNo?10:0)+(hit.poNo?9:0)+(hit.orderQty?4:0)+(hit.boxQty?4:0)+(hit.nw?2:0)+(hit.gw?2:0);
+    if(score>bestScore){bestScore=score;best=m;bestHits=hits;bestKey=keyHits}
+  }
+  // 至少辨識到 Part/PO 其中一個，且四個主要欄位至少三個命中；避免誤套 master。
+  const row=(best && bestKey>=3 && bestHits>=3 && bestScore>=18)?best:null;
+  return {row,raw:'BARCODES='+codes.join(',')+'\n'+raw}
 }
 function cropCanvas(src,r,zoom=2.5){
   const [rx,ry,rw,rh]=r, sx=Math.round(src.width*rx),sy=Math.round(src.height*ry),sw=Math.round(src.width*rw),sh=Math.round(src.height*rh);
@@ -170,7 +205,7 @@ function parseRegionValue(key,raw){
 }
 async function prepareLabelCrop(file){
   const bmp=await createImageBitmap(file),w=bmp.width,h=bmp.height;
-  // V1.3.5 現場照片：白標多位於畫面上半部中央；先去掉大面積紙箱背景，再依標籤版面切六區。
+  // V1.3.6 現場照片：白標多位於畫面上半部中央；先去掉大面積紙箱背景，再依標籤版面切六區。
   const sx=Math.round(w*.03),sy=Math.round(h*.10),sw=Math.round(w*.94),sh=Math.round(h*.58);
   const scale=Math.min(3.2,3200/Math.max(sw,sh));
   const c=document.createElement('canvas');c.width=Math.max(1,Math.round(sw*scale));c.height=Math.max(1,Math.round(sh*scale));
