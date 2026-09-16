@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.3.12</title>
+<title>線邊棧板入庫 V1.4.0</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.3.12</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.4.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -111,56 +111,105 @@ async function tesseractText(file,prefix,maxSide=1600){
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 async function recognizeLabel(file){
-  // V1.3.7: 先以 Part No. 鎖定更新資料候選；唯一候選時直接帶入六欄，避免 OCR 把條碼線/欄名誤判成數字。
-  // 這可避免現場拍攝角度稍有偏移時，固定裁切區把數字切掉。
+  // V1.4.0：多版型辨識。先讀整張標籤文字，再用欄位名稱/更新資料交叉確認；
+  // 不再用單一版型的固定六區座標作為主要判斷來源。
   const raws=[];
-  try{
-    setOCRState('① 條碼/標籤快速辨識…','wait');
-    const quick=await quickLabelFromPhoto(file); raws.push('QUICK: '+quick.raw);
-    if(quick.row){
-      const m=quick.row;
-      return {partNo:m.partNo,orderQty:m.orderQty,poNo:m.poNo,boxQty:m.boxQty,nw:m.nw,gw:m.gw,raw:raws.join('\n')};
-    }
-  }catch(e){console.warn('quick label',e)}
-
   const base=await prepareLabelCrop(file);
-  // V1.3.12：四個有條碼欄位先以 ZXing 解碼；OCR 只作備援。
-  // 直接依白色標籤版面切條碼區，避免 OCR 把條碼線誤認成數字。
-  const bar=await decodePrintedBarcodes(base);
-  if(bar.partNo) raws.push('BAR partNo: '+bar.partNo);
-  if(bar.orderQty) raws.push('BAR orderQty: '+bar.orderQty);
-  if(bar.poNo) raws.push('BAR poNo: '+bar.poNo);
-  if(bar.boxQty) raws.push('BAR boxQty: '+bar.boxQty);
-  const specs={
-    partNo:[.20,.10,.60,.31], orderQty:[.03,.42,.45,.25], poNo:[.52,.42,.45,.25],
-    boxQty:[.03,.70,.45,.27], nw:[.80,.70,.19,.14], gw:[.80,.84,.19,.14]
-  };
-  const out={}; let i=0;
-  for(const [key,r] of Object.entries(specs)){
-    i++; setOCRState(`標籤分區 OCR ${i}/6`,'wait');
-    try{
-      const c=cropCanvas(base,r,key==='partNo'?2.2:(key==='nw'||key==='gw'?5.0:2.8));
-      const raw=await tesseractCanvasText(c,`標籤 ${i}/6`); raws.push(key+': '+raw);
-      out[key]=bar[key] || parseRegionValue(key,raw);
-    }catch(e){console.warn('region OCR',key,e);out[key]=''}
-  }
-  if(labelMissing(out).length){
-    try{
-      const rawAll=await tesseractCanvasText(base,'標籤整體備援'); raws.push('ALL: '+rawAll);
-      const p=parseOCR(rawAll); delete p.boxNo;
-      for(const k of Object.keys(specs)) if(!out[k]&&p[k]!==undefined&&p[k]!==null&&p[k]!=='') out[k]=p[k];
-      const a=assistLabelFromMasterV134({...out},rawAll); for(const k of Object.keys(specs)) if(!out[k]&&a[k])out[k]=a[k];
-    }catch(e){console.warn('fallback OCR',e)}
-  }
-  // V1.3.12：以已穩定辨識的 PO No. / Box Q'ty / N.W. 交叉鎖定更新資料。
-  // 三欄能唯一對到同一筆 master 時，直接採用該筆六欄正式值；避免 Part/Order/G.W. 的 OCR 雜訊放行。
-  const locked=lockLabelByStableFields(out);
+  let raw='';
+  try{raw=await tesseractCanvasText(base,'① 多版型標籤 OCR');raws.push('SEMANTIC OCR:\n'+raw)}catch(e){console.warn('semantic OCR',e)}
+
+  // 第一層：依 PART NO / ORDER QTY / INBOUND PO / BOX QTY / N.W / G.W 的語意標題取值。
+  const out=parseSemanticLabel(raw);
+
+  // 第二層：整張照片上的條碼只作「候選證據」，不再假定條碼固定落在某個座標。
+  const codes=await detectAllBarcodes(file);
+  if(codes.length)raws.push('BARCODES='+codes.join(','));
+  applyBarcodeEvidence(out,codes);
+
+  // 第三層：以更新資料做交叉驗證。只有唯一且有足夠獨立證據時才回填正式六欄；
+  // 不確定就要求重拍，絕不猜值。
+  const locked=lockSemanticMaster(out,raw,codes);
   if(locked){
-    raws.push('MASTER LOCK V1.3.12 => '+locked.partNo+' / '+locked.poNo);
-    for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw']) out[k]=locked[k];
+    for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])out[k]=locked[k];
     out._verifiedByMaster=true;
+    raws.push('MASTER LOCK V1.4.0 => '+locked.partNo+' / '+locked.poNo);
   }
-  out.raw=raws.join('\n'); return out
+  out.raw=raws.join('\n');
+  return out;
+}
+function cleanOCRLine(s){return String(s||'').toUpperCase().replace(/[|]/g,' ').replace(/\s+/g,' ').trim()}
+function semanticDigits(s){return String(s||'').toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8').match(/\d+(?:\.\d+)?/g)||[]}
+function parseSemanticLabel(raw){
+  const lines=String(raw||'').split(/\n+/).map(cleanOCRLine).filter(Boolean), out={};
+  const after=(re,key,weight=false)=>{
+    for(let i=0;i<lines.length;i++){
+      if(!re.test(lines[i]))continue;
+      // 同一行標題後面的數字優先；其次看後面兩行。可適應不同欄位排列。
+      const pool=[lines[i].replace(re,' '),lines[i+1]||'',lines[i+2]||''];
+      for(const z of pool){
+        const ns=semanticDigits(z); if(!ns.length)continue;
+        let v=ns.sort((a,b)=>b.replace('.','').length-a.replace('.','').length)[0];
+        if(weight){
+          const dec=ns.find(x=>/^\d{1,3}\.\d{1,2}$/.test(x)); if(dec)v=dec;
+          else if(/^\d{2,4}$/.test(v))v=v.slice(0,-1)+'.'+v.slice(-1);
+          else continue;
+          out[key]=Number(v);
+        }else out[key]=v.replace(/\D/g,'');
+        break;
+      }
+      if(out[key]!==undefined)break;
+    }
+  };
+  after(/PART\s*\.?\s*NO\.?/i,'partNo');
+  after(/ORDER\s*Q(?:TY|['’]?TY)?/i,'orderQty');
+  after(/(?:INBOUND\s*)?PO\s*#?|P\.?O\.?\s*NO\.?/i,'poNo');
+  after(/BOX\s*Q(?:TY|['’]?TY)?/i,'boxQty');
+  after(/N\.?\s*W\.?\s*(?:\(\s*KG\s*\))?/i,'nw',true);
+  after(/G\.?\s*W\.?\s*(?:\(\s*KG\s*\))?/i,'gw',true);
+  return out;
+}
+async function detectAllBarcodes(file){
+  const vals=[];
+  if('BarcodeDetector' in window){try{
+    const fm=await BarcodeDetector.getSupportedFormats();
+    const wanted=['code_128','code_39','codabar','ean_13','ean_8','itf'].filter(x=>fm.includes(x));
+    const d=new BarcodeDetector(wanted.length?{formats:wanted}:undefined), bmp=await createImageBitmap(file);
+    const found=await d.detect(bmp);bmp.close?.();
+    for(const x of found){const v=String(x.rawValue||'').trim();if(v&&!vals.includes(v))vals.push(v)}
+  }catch(e){console.warn('BarcodeDetector all',e)}}
+  return vals;
+}
+function applyBarcodeEvidence(out,codes){
+  const ds=codes.map(x=>String(x).replace(/\D/g,'')).filter(Boolean);
+  // 只有在欄位已由標題 OCR 得到「近似值」時才讓條碼修正，不靠條碼位置猜欄位。
+  const sameish=(a,b)=>{a=String(a||'').replace(/^0+(?=\d)/,'');b=String(b||'').replace(/^0+(?=\d)/,'');return a&&b&&(a===b||a.endsWith(b)||b.endsWith(a))};
+  for(const k of ['partNo','orderQty','poNo','boxQty']){
+    if(out[k]===undefined)continue; const hit=ds.find(v=>sameish(v,out[k])); if(hit)out[k]=hit;
+  }
+}
+function lockSemanticMaster(p,raw,codes){
+  if(!state.master.length)return null;
+  const hay=(String(raw||'')+' '+codes.join(' ')).toUpperCase().replace(/[^A-Z0-9.]/g,'');
+  const norm=v=>String(v??'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
+  const seen=v=>{const n=norm(v);return !!n&&hay.includes(n)};
+  const eq=(a,b)=>normId(a)===normId(b), eqN=(a,b)=>Number.isFinite(Number(a))&&Number.isFinite(Number(b))&&Math.abs(Number(a)-Number(b))<.001;
+  let ranked=[];
+  for(const m of state.master){
+    let score=0,hits=0,keyHits=0;
+    const tests=[
+      ['partNo',10,true,eq],['poNo',10,true,eq],['orderQty',5,true,eq],['boxQty',5,true,eq],['nw',3,false,eqN],['gw',3,false,eqN]
+    ];
+    for(const [k,w,key,cmp] of tests){
+      let ok=p[k]!==undefined&&p[k]!==''&&cmp(m[k],p[k]);
+      if(!ok&&seen(m[k]))ok=true;
+      if(ok){score+=w;hits++;if(key)keyHits++}
+    }
+    ranked.push({m,score,hits,keyHits});
+  }
+  ranked.sort((a,b)=>b.score-a.score);const a=ranked[0],b=ranked[1];
+  // 至少兩個獨立欄位、其中一個為主要識別欄，且最佳候選必須明顯唯一。
+  if(a&&a.hits>=2&&a.keyHits>=1&&a.score>=13&&(!b||a.score>b.score))return a.m;
+  return null;
 }
 function lockLabelByStableFields(p){
   if(!state.master.length)return null;
