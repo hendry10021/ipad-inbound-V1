@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.3.4</title>
+<title>線邊棧板入庫 V1.3.5</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.3.4</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.3.5</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -110,74 +110,94 @@ async function tesseractText(file,prefix,maxSide=1600){
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 async function recognizeLabel(file){
-  // V1.3.4: 第一張照片必須先完成六欄判讀，才開放第二張 Box No.
-  // 先讀整張，再讀中央標籤區域；兩次結果合併，可避免 iPad 拍照時標籤只佔畫面一小部分而漏欄。
-  const raw1=await tesseractText(file,'標籤 OCR 1/2',2600);
-  let raw2='';
-  let p=parseOCR(raw1); delete p.boxNo;
-  if(labelMissing(p).length){
+  // V1.3.5: 固定格式白標籤採六區域獨立辨識；整張 OCR 僅作備援。
+  const base=await prepareLabelCrop(file);
+  const specs={
+    partNo:[.22,.05,.60,.38], orderQty:[.02,.39,.48,.30], poNo:[.50,.39,.49,.30],
+    boxQty:[.02,.69,.48,.29], nw:[.50,.69,.49,.15], gw:[.50,.84,.49,.15]
+  };
+  const out={}; const raws=[];
+  let i=0;
+  for(const [key,r] of Object.entries(specs)){
+    i++; setOCRState(`標籤分區 OCR ${i}/6`,'wait');
     try{
-      const crop=await prepareLabelCrop(file);
-      raw2=await tesseractCanvasText(crop,'標籤 OCR 2/2');
-    }catch(e){console.warn('label crop OCR',e)}
+      const c=cropCanvas(base,r, key==='partNo'?2.2:2.8);
+      const raw=await tesseractCanvasText(c,`標籤 ${i}/6`); raws.push(key+': '+raw);
+      out[key]=parseRegionValue(key,raw);
+    }catch(e){console.warn('region OCR',key,e);out[key]=''}
   }
-  const raw=[raw1,raw2].filter(Boolean).join('\n');
-  p=parseOCR(raw); delete p.boxNo;
-  p=assistLabelFromMasterV134(p,raw);
-  p.raw=raw; return p
+  // 用 master 資料對各區域做容錯校正；只在區域內看見該值時採用，避免跨欄誤配。
+  if(state.master.length){
+    const regionRaw=Object.fromEntries(raws.map(x=>{const j=x.indexOf(':');return [x.slice(0,j),x.slice(j+1)]}));
+    for(const key of Object.keys(specs)){
+      if(out[key]) continue;
+      const matches=[];
+      for(const m of state.master) if(valueSeen(regionRaw[key]||'',m[key])) matches.push(m[key]);
+      const uniq=[...new Set(matches.map(String))]; if(uniq.length===1) out[key]=matches[0];
+    }
+  }
+  // 若仍缺欄，再做一次整體解析與既有 master 輔助。
+  if(labelMissing(out).length){
+    try{
+      const rawAll=await tesseractCanvasText(base,'標籤整體備援'); raws.push('ALL: '+rawAll);
+      const p=parseOCR(rawAll); delete p.boxNo;
+      for(const k of Object.keys(specs)) if(!out[k]&&p[k]!==undefined&&p[k]!==null&&p[k]!=='') out[k]=p[k];
+      const a=assistLabelFromMasterV134({...out},rawAll); for(const k of Object.keys(specs)) if(!out[k]&&a[k])out[k]=a[k];
+    }catch(e){console.warn('fallback OCR',e)}
+  }
+  out.raw=raws.join('\n'); return out
+}
+function cropCanvas(src,r,zoom=2.5){
+  const [rx,ry,rw,rh]=r, sx=Math.round(src.width*rx),sy=Math.round(src.height*ry),sw=Math.round(src.width*rw),sh=Math.round(src.height*rh);
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.round(sw*zoom));c.height=Math.max(1,Math.round(sh*zoom));
+  const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  const im=x.getImageData(0,0,c.width,c.height),d=im.data;
+  for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];const v=g>190?255:g<120?0:Math.max(0,Math.min(255,(g-128)*2.2+128));d[i]=d[i+1]=d[i+2]=v}x.putImageData(im,0,0);return c
+}
+function parseRegionValue(key,raw){
+  let t=String(raw||'').toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8');
+  const nums=t.match(/\d+(?:\.\d+)?/g)||[];
+  if(!nums.length)return '';
+  if(key==='nw'||key==='gw'){
+    const ds=nums.filter(x=>x.includes('.')); if(ds.length)return Number(ds[ds.length-1]);
+    const n=nums[nums.length-1]; return n.length>=2?Number(n.slice(0,-1)+'.'+n.slice(-1)):Number(n)
+  }
+  // 選最長數字串，避免把欄名中的雜訊當成資料；Qty 保留照片上的前導 0。
+  let v=nums.sort((a,b)=>b.replace('.','').length-a.replace('.','').length)[0].replace(/\D/g,'');
+  if(key==='partNo'||key==='poNo')return v;
+  if(key==='orderQty'||key==='boxQty')return v;
+  return v
 }
 async function prepareLabelCrop(file){
   const bmp=await createImageBitmap(file),w=bmp.width,h=bmp.height;
-  // 現場拍攝規範為正對白標；取中央寬 94%、高度 15%~72%，排除上下大量紙箱背景。
-  const sx=Math.round(w*.03),sy=Math.round(h*.15),sw=Math.round(w*.94),sh=Math.round(h*.57);
-  const scale=Math.min(3,3000/Math.max(sw,sh));
+  // V1.3.5 現場照片：白標多位於畫面上半部中央；先去掉大面積紙箱背景，再依標籤版面切六區。
+  const sx=Math.round(w*.03),sy=Math.round(h*.10),sw=Math.round(w*.94),sh=Math.round(h*.58);
+  const scale=Math.min(3.2,3200/Math.max(sw,sh));
   const c=document.createElement('canvas');c.width=Math.max(1,Math.round(sw*scale));c.height=Math.max(1,Math.round(sh*scale));
   const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(bmp,sx,sy,sw,sh,0,0,c.width,c.height);bmp.close?.();
   const im=x.getImageData(0,0,c.width,c.height),d=im.data;
-  for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];const v=g>205?255:g<105?0:Math.max(0,Math.min(255,(g-128)*1.8+128));d[i]=d[i+1]=d[i+2]=v}
-  x.putImageData(im,0,0);return c
+  for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];const v=g>215?255:g<95?0:Math.max(0,Math.min(255,(g-128)*1.7+128));d[i]=d[i+1]=d[i+2]=v}x.putImageData(im,0,0);return c
 }
 async function tesseractCanvasText(canvas,prefix){
   if(!window.Tesseract)throw new Error('OCR engine unavailable');let last=-1;
-  const job=Tesseract.recognize(canvas,'eng',{logger:m=>{if(m.status==='recognizing text'){const n=Math.round((m.progress||0)*100);if(n!==last){last=n;setOCRState(prefix+' '+n+'%','wait')}}}});
+  const job=Tesseract.recognize(canvas,'eng',{logger:m=>{if(m.status==='recognizing text'){const n=Math.round((m.progress||0)*100);if(n!==last){last=n;setOCRState(prefix+' '+n+'%','wait')}}},tessedit_char_whitelist:'0123456789.PARTNOORDERQTYINBOUNDPOBOXNWKGW'});
   const timeout=new Promise((_,rej)=>setTimeout(()=>rej(new Error('OCR crop timeout')),45000));
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 function ocrDigitStream(raw){
-  return String(raw||'').toUpperCase()
-    .replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8')
-    .replace(/[^0-9.]/g,' ');
+  return String(raw||'').toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8').replace(/[^0-9.]/g,' ');
 }
 function digitsOnly(v){return String(v??'').replace(/[^0-9]/g,'').replace(/^0+(?=\d)/,'')}
 function valueSeen(raw,v){
-  if(v===null||v===undefined||v==='')return false;
-  const stream=ocrDigitStream(raw), compact=stream.replace(/\s/g,'');
-  const original=String(v).trim();
-  const d=digitsOnly(original), dn=digitsOnly(Number(v));
-  if(d && (compact.includes(d)|| (dn&&compact.includes(dn)))) return true;
-  const n=Number(v);
-  if(Number.isFinite(n) && !Number.isInteger(n)){
-    const a=n.toFixed(1), b=a.replace('.','');
-    if(compact.includes(a)||compact.includes(b))return true;
-  }
-  return false;
+  if(v===null||v===undefined||v==='')return false; const compact=ocrDigitStream(raw).replace(/\s/g,'');
+  const original=String(v).trim(), d=digitsOnly(original), dn=digitsOnly(Number(v));
+  if(d&&(compact.includes(d)||(dn&&compact.includes(dn))))return true;
+  const n=Number(v);if(Number.isFinite(n)&&!Number.isInteger(n)){const a=n.toFixed(1),b=a.replace('.','');if(compact.includes(a)||compact.includes(b))return true}return false
 }
 function assistLabelFromMasterV134(p,raw){
-  if(!state.master.length)return p;
-  let best=null,bestScore=-1,bestHits=0;
-  for(const m of state.master){
-    const hit={partNo:valueSeen(raw,m.partNo),poNo:valueSeen(raw,m.poNo),orderQty:valueSeen(raw,m.orderQty),boxQty:valueSeen(raw,m.boxQty),nw:valueSeen(raw,m.nw),gw:valueSeen(raw,m.gw)};
-    const hits=Object.values(hit).filter(Boolean).length;
-    const score=(hit.partNo?8:0)+(hit.poNo?7:0)+(hit.orderQty?3:0)+(hit.boxQty?3:0)+(hit.nw?2:0)+(hit.gw?2:0);
-    if(score>bestScore){bestScore=score;best={m,hit};bestHits=hits}
-  }
-  // 至少一個強識別碼 + 另一欄，或至少四欄吻合，才允許用 master 補齊，避免誤配。
-  if(best && (((best.hit.partNo||best.hit.poNo)&&bestHits>=2)||bestHits>=4)){
-    for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw']) p[k]=best.m[k];
-    return p;
-  }
-  // 若沒有足夠 master 證據，保留一般 OCR 結果，不猜資料。
-  return assistLabelFromMaster(p,raw);
+  if(!state.master.length)return p;let best=null,bestScore=-1,bestHits=0;
+  for(const m of state.master){const hit={partNo:valueSeen(raw,m.partNo),poNo:valueSeen(raw,m.poNo),orderQty:valueSeen(raw,m.orderQty),boxQty:valueSeen(raw,m.boxQty),nw:valueSeen(raw,m.nw),gw:valueSeen(raw,m.gw)};const hits=Object.values(hit).filter(Boolean).length;const score=(hit.partNo?8:0)+(hit.poNo?7:0)+(hit.orderQty?3:0)+(hit.boxQty?3:0)+(hit.nw?2:0)+(hit.gw?2:0);if(score>bestScore){bestScore=score;best={m,hit};bestHits=hits}}
+  if(best&&(((best.hit.partNo||best.hit.poNo)&&bestHits>=2)||bestHits>=4)){for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])p[k]=best.m[k];return p}return assistLabelFromMaster(p,raw)
 }
 function labelMissing(p){const req=[['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W.'],['gw','G.W.']];return req.filter(([k])=>p[k]===null||p[k]===undefined||p[k]==='').map(([,l])=>l)}
 function assistLabelFromMaster(p,raw){if(!state.master.length)return p;const compact=String(raw||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');const digits=String(raw||'').replace(/[^0-9.]/g,' ');const has=(v)=>{if(v===null||v===undefined||v==='')return false;const a=String(v).toUpperCase().replace(/[^A-Z0-9.]/g,'');if(a&&compact.includes(a))return true;const n=Number(v);if(Number.isFinite(n)){const variants=[String(v),String(n),String(v).replace(/^0+/,''),Number.isInteger(n)?String(Math.trunc(n)):n.toFixed(1)];return variants.some(x=>x&&digits.includes(x))}return false};let best=null,score=-1;for(const m of state.master){let sc=0;if(has(m.partNo))sc+=4;if(has(m.poNo))sc+=4;if(has(m.orderQty))sc+=2;if(has(m.boxQty))sc+=2;if(has(m.nw))sc+=2;if(has(m.gw))sc+=2;if(sc>score){score=sc;best=m}}if(best&&score>=8){for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])if(p[k]===null||p[k]===undefined||p[k]===''||has(best[k]))p[k]=best[k]}return p}
