@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.5.0</title>
+<title>線邊棧板入庫 V1.6.0</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.5.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.6.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -111,31 +111,84 @@ async function tesseractText(file,prefix,maxSide=1600){
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 async function recognizeLabel(file){
-  // V1.5.0：多版型證據辨識。先讀整張標籤文字/條碼，再以更新資料唯一候選交叉確認；
-  // 不再用單一版型的固定六區座標作為主要判斷來源。
+  // V1.6.0：不依賴固定版型。整張白標做兩種影像 OCR，並用「欄名附近文字 + 條碼 + 更新資料」三方交叉確認。
+  // 正式六欄只有在 master 唯一候選成立時才回填，避免 OCR 猜錯直接入庫。
   const raws=[];
   const base=await prepareLabelCrop(file);
-  let raw='';
-  try{raw=await tesseractCanvasText(base,'① 多版型標籤 OCR');raws.push('SEMANTIC OCR:\n'+raw)}catch(e){console.warn('semantic OCR',e)}
-
-  // 第一層：依 PART NO / ORDER QTY / INBOUND PO / BOX QTY / N.W / G.W 的語意標題取值。
+  let raw1='',raw2='';
+  try{raw1=await tesseractCanvasText(base,'① 標籤 OCR A');raws.push('OCR-A:\n'+raw1)}catch(e){console.warn('OCR A',e)}
+  try{const hi=adaptiveLabelCanvas(base);raw2=await tesseractCanvasText(hi,'① 標籤 OCR B');raws.push('OCR-B:\n'+raw2)}catch(e){console.warn('OCR B',e)}
+  const raw=(raw1+'\n'+raw2).trim();
   const out=parseSemanticLabel(raw);
 
-  // 第二層：整張照片上的條碼只作「候選證據」，不再假定條碼固定落在某個座標。
+  // Safari 原生 BarcodeDetector 若可用就讀；同時以 ZXing 對整張標籤多尺度嘗試。
   const codes=await detectAllBarcodes(file);
+  try{for(const v of await detectZXingEvidence(base))if(v&&!codes.includes(v))codes.push(v)}catch(e){console.warn('ZXing evidence',e)}
   if(codes.length)raws.push('BARCODES='+codes.join(','));
   applyBarcodeEvidence(out,codes);
 
-  // 第三層：以更新資料做交叉驗證。只有唯一且有足夠獨立證據時才回填正式六欄；
-  // 不確定就要求重拍，絕不猜值。
-  const locked=lockSemanticMaster(out,raw,codes);
+  const locked=lockMasterV160(out,raw,codes);
   if(locked){
     for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])out[k]=locked[k];
     out._verifiedByMaster=true;
-    raws.push('MASTER LOCK V1.5.0 => '+locked.partNo+' / '+locked.poNo);
+    raws.push('MASTER LOCK V1.6.0 => '+locked.partNo+' / '+locked.poNo);
   }
   out.raw=raws.join('\n');
   return out;
+}
+function adaptiveLabelCanvas(src){
+  const c=document.createElement('canvas');c.width=src.width;c.height=src.height;
+  const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(src,0,0);
+  const im=x.getImageData(0,0,c.width,c.height),d=im.data;
+  // 高對比二值化：專門補長碼、小數點與細字；第一輪仍保留灰階細節。
+  let sum=0,n=0;for(let i=0;i<d.length;i+=16){sum+=(.299*d[i]+.587*d[i+1]+.114*d[i+2]);n++}
+  const th=Math.max(125,Math.min(205,(sum/n)-18));
+  for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2],v=g>th?255:0;d[i]=d[i+1]=d[i+2]=v}
+  x.putImageData(im,0,0);return c
+}
+async function detectZXingEvidence(base){
+  if(!window.ZXing)return [];
+  const vals=[];
+  // 不用欄位固定座標；把整張白標切成重疊橫帶，只為讓解碼器一次看到較少條碼。
+  // 橫帶彼此重疊，能容忍目前已知不同標籤版型的上下位移。
+  const bands=[[0,.00,1,.42],[0,.20,1,.42],[0,.40,1,.38],[0,.62,1,.38]];
+  for(const r of bands){
+    try{const c=cropCanvas(base,r,1.8),v=await decodeZXingCanvas(c);if(v&&!vals.includes(v))vals.push(v)}catch(e){}
+  }
+  return vals
+}
+function lockMasterV160(p,raw,codes){
+  if(!state.master.length)return null;
+  const nid=v=>normId(v).replace(/^0+(?=\d)/,'');
+  const eq=(a,b)=>nid(a)===nid(b);
+  const eqN=(a,b)=>Number.isFinite(Number(a))&&Number.isFinite(Number(b))&&Math.abs(Number(a)-Number(b))<.001;
+  const text=String(raw||'').toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8');
+  const compact=text.replace(/[^0-9.]/g,'');
+  const cset=codes.map(x=>String(x).replace(/\D/g,'')).filter(Boolean);
+  const seen=v=>{const d=String(v??'').replace(/\D/g,'');if(!d)return false;const z=d.replace(/^0+(?=\d)/,'');return compact.includes(d)||compact.includes(z)};
+  const ranked=[];
+  for(const m of state.master){
+    let score=0,keys=0,independent=0;
+    if(p.partNo&&eq(m.partNo,p.partNo)){score+=24;keys++;independent++}
+    if(p.poNo&&eq(m.poNo,p.poNo)){score+=22;keys++;independent++}
+    if(p.orderQty!==undefined&&eqN(m.orderQty,p.orderQty)){score+=8;independent++}
+    if(p.boxQty!==undefined&&eqN(m.boxQty,p.boxQty)){score+=8;independent++}
+    if(p.nw!==undefined&&eqN(m.nw,p.nw)){score+=5;independent++}
+    if(p.gw!==undefined&&eqN(m.gw,p.gw)){score+=5;independent++}
+    // 整張 OCR 看見 master 的長識別碼時給強證據；Qty 只給低分，避免常見數字誤鎖。
+    if(seen(m.partNo)){score+=18;keys++}
+    if(seen(m.poNo)){score+=16;keys++}
+    // 任一解出的條碼可與 master 的四個印刷條碼值比對，不需要知道它在版面的哪個位置。
+    for(const cd of cset){
+      const vals=[['partNo',m.partNo,24],['poNo',m.poNo,22],['orderQty',m.orderQty,9],['boxQty',m.boxQty,9]];
+      for(const [k,v,w] of vals){const d=String(v??'').replace(/\D/g,'');if(d&&cd.replace(/^0+(?=\d)/,'')===d.replace(/^0+(?=\d)/,'')){score+=w;independent++;if(k==='partNo'||k==='poNo')keys++}}
+    }
+    ranked.push({m,score,keys,independent});
+  }
+  ranked.sort((a,b)=>b.score-a.score);const a=ranked[0],b=ranked[1];
+  // 需至少一個 Part/PO 強識別證據，且最佳候選需明顯領先第二名。
+  if(a&&a.keys>=1&&a.score>=24&&(!b||a.score-b.score>=8))return a.m;
+  return null
 }
 function cleanOCRLine(s){return String(s||'').toUpperCase().replace(/[|]/g,' ').replace(/\s+/g,' ').trim()}
 function semanticDigits(s){return String(s||'').toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8').match(/\d+(?:\.\d+)?/g)||[]}
