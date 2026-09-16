@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.4.0</title>
+<title>線邊棧板入庫 V1.5.0</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.4.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.5.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -111,7 +111,7 @@ async function tesseractText(file,prefix,maxSide=1600){
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 async function recognizeLabel(file){
-  // V1.4.0：多版型辨識。先讀整張標籤文字，再用欄位名稱/更新資料交叉確認；
+  // V1.5.0：多版型證據辨識。先讀整張標籤文字/條碼，再以更新資料唯一候選交叉確認；
   // 不再用單一版型的固定六區座標作為主要判斷來源。
   const raws=[];
   const base=await prepareLabelCrop(file);
@@ -132,7 +132,7 @@ async function recognizeLabel(file){
   if(locked){
     for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])out[k]=locked[k];
     out._verifiedByMaster=true;
-    raws.push('MASTER LOCK V1.4.0 => '+locked.partNo+' / '+locked.poNo);
+    raws.push('MASTER LOCK V1.5.0 => '+locked.partNo+' / '+locked.poNo);
   }
   out.raw=raws.join('\n');
   return out;
@@ -188,27 +188,34 @@ function applyBarcodeEvidence(out,codes){
   }
 }
 function lockSemanticMaster(p,raw,codes){
+  // V1.5.0：版型無關。OCR 只負責提供「證據」，正式值一律從更新資料的唯一候選回填。
+  // 這避免不同供應商版型/欄位位置造成數字被配到錯欄。
   if(!state.master.length)return null;
-  const hay=(String(raw||'')+' '+codes.join(' ')).toUpperCase().replace(/[^A-Z0-9.]/g,'');
-  const norm=v=>String(v??'').toUpperCase().replace(/[^A-Z0-9.]/g,'');
-  const seen=v=>{const n=norm(v);return !!n&&hay.includes(n)};
+  const norm=v=>String(v??'').toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8').replace(/[^A-Z0-9.]/g,'');
+  const hay=norm(String(raw||'')+' '+codes.join(' '));
+  const digits=(String(raw||'')+' '+codes.join(' ')).toUpperCase().replace(/[OQD]/g,'0').replace(/[IL|]/g,'1').replace(/S/g,'5').replace(/B/g,'8').match(/\d+(?:\.\d+)?/g)||[];
+  const lev=(a,b)=>{a=norm(a);b=norm(b);if(!a||!b)return 99;const d=Array.from({length:a.length+1},(_,i)=>[i]);for(let j=1;j<=b.length;j++)d[0][j]=j;for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return d[a.length][b.length]};
+  const exact=v=>{const n=norm(v);return n.length>=2&&hay.includes(n)};
+  const near=v=>{const n=norm(v);if(n.length<5)return false;return digits.some(t=>Math.abs(norm(t).length-n.length)<=1&&lev(t,n)<=1)};
   const eq=(a,b)=>normId(a)===normId(b), eqN=(a,b)=>Number.isFinite(Number(a))&&Number.isFinite(Number(b))&&Math.abs(Number(a)-Number(b))<.001;
-  let ranked=[];
+  const ranked=[];
   for(const m of state.master){
     let score=0,hits=0,keyHits=0;
-    const tests=[
-      ['partNo',10,true,eq],['poNo',10,true,eq],['orderQty',5,true,eq],['boxQty',5,true,eq],['nw',3,false,eqN],['gw',3,false,eqN]
-    ];
-    for(const [k,w,key,cmp] of tests){
-      let ok=p[k]!==undefined&&p[k]!==''&&cmp(m[k],p[k]);
-      if(!ok&&seen(m[k]))ok=true;
-      if(ok){score+=w;hits++;if(key)keyHits++}
-    }
+    const add=(w,key)=>{score+=w;hits++;if(key)keyHits++};
+    // 語意欄位直接命中：最高可信度
+    if(p.partNo&&eq(m.partNo,p.partNo))add(18,true); else if(exact(m.partNo))add(16,true); else if(near(m.partNo))add(10,true);
+    if(p.poNo&&eq(m.poNo,p.poNo))add(16,true); else if(exact(m.poNo))add(14,true); else if(near(m.poNo))add(9,true);
+    if(p.orderQty!==undefined&&eqN(m.orderQty,p.orderQty))add(7,false); else if(exact(m.orderQty))add(5,false);
+    if(p.boxQty!==undefined&&eqN(m.boxQty,p.boxQty))add(7,false); else if(exact(m.boxQty))add(5,false);
+    if(p.nw!==undefined&&eqN(m.nw,p.nw))add(4,false);
+    if(p.gw!==undefined&&eqN(m.gw,p.gw))add(4,false);
+    // 四個印刷條碼若被 Safari 解出，視為獨立強證據。
+    for(const c of codes){const cd=String(c).replace(/\D/g,'');if(cd&&cd===String(m.partNo).replace(/\D/g,'')){score+=20;keyHits++}if(cd&&cd===String(m.poNo).replace(/\D/g,'')){score+=18;keyHits++}}
     ranked.push({m,score,hits,keyHits});
   }
   ranked.sort((a,b)=>b.score-a.score);const a=ranked[0],b=ranked[1];
-  // 至少兩個獨立欄位、其中一個為主要識別欄，且最佳候選必須明顯唯一。
-  if(a&&a.hits>=2&&a.keyHits>=1&&a.score>=13&&(!b||a.score>b.score))return a.m;
+  // 必須有主要識別欄證據，且最佳候選和第二名有明顯差距；不確定就不回填。
+  if(a&&a.keyHits>=1&&a.score>=18&&(!b||a.score-b.score>=5))return a.m;
   return null;
 }
 function lockLabelByStableFields(p){
