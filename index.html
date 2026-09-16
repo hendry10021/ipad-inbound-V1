@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.3.8</title>
+<title>線邊棧板入庫 V1.3.9</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.3.8</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.3.9</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -66,6 +66,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </main>
 <nav class="tabs"><button data-view="scanView" class="active">📷<br>掃描</button><button data-view="historyView">🔎<br>履歷</button><button data-view="palletView">📦<br>棧板</button><button data-view="adminView">⚙️<br>主管</button></nav>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script src="./auto-update.js"></script>
 <script>
 const FIELDS=[['boxNo','Box No.'],['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W. (KG)'],['gw','G.W. (KG)']];
@@ -123,6 +124,13 @@ async function recognizeLabel(file){
   }catch(e){console.warn('quick label',e)}
 
   const base=await prepareLabelCrop(file);
+  // V1.3.9：四個有條碼欄位先以 ZXing 解碼；OCR 只作備援。
+  // 直接依白色標籤版面切條碼區，避免 OCR 把條碼線誤認成數字。
+  const bar=await decodePrintedBarcodes(base);
+  if(bar.partNo) raws.push('BAR partNo: '+bar.partNo);
+  if(bar.orderQty) raws.push('BAR orderQty: '+bar.orderQty);
+  if(bar.poNo) raws.push('BAR poNo: '+bar.poNo);
+  if(bar.boxQty) raws.push('BAR boxQty: '+bar.boxQty);
   const specs={
     partNo:[.18,.05,.64,.40], orderQty:[.01,.40,.49,.29], poNo:[.50,.40,.49,.29],
     boxQty:[.01,.69,.49,.30], nw:[.50,.69,.49,.16], gw:[.50,.84,.49,.16]
@@ -133,7 +141,7 @@ async function recognizeLabel(file){
     try{
       const c=cropCanvas(base,r,key==='partNo'?2.2:2.8);
       const raw=await tesseractCanvasText(c,`標籤 ${i}/6`); raws.push(key+': '+raw);
-      out[key]=parseRegionValue(key,raw);
+      out[key]=bar[key] || parseRegionValue(key,raw);
     }catch(e){console.warn('region OCR',key,e);out[key]=''}
   }
   if(labelMissing(out).length){
@@ -198,6 +206,42 @@ async function quickLabelFromPhoto(file){
   }
   return {row,raw:'BARCODES='+codes.join(',')+'\n'+raw}
 }
+async function decodePrintedBarcodes(labelCanvas){
+  const out={};
+  if(!window.ZXing)return out;
+  // 條碼實際位置（相對於白色標籤）：Part 上方大格；Order/PO 中排；Box 左下。
+  const zones={
+    partNo:[.25,.20,.50,.24],
+    orderQty:[.08,.49,.34,.20],
+    poNo:[.58,.49,.34,.20],
+    boxQty:[.08,.72,.34,.20]
+  };
+  for(const [key,r] of Object.entries(zones)){
+    try{
+      const c=cropCanvas(labelCanvas,r,3.2);
+      const v=await decodeZXingCanvas(c);
+      if(v)out[key]=normalizeBarcodeValue(key,v);
+    }catch(e){console.warn('ZXing',key,e)}
+  }
+  return out;
+}
+async function decodeZXingCanvas(canvas){
+  const hints=new Map();
+  if(ZXing.DecodeHintType&&ZXing.BarcodeFormat){
+    hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.CODE_128,ZXing.BarcodeFormat.CODE_39,ZXing.BarcodeFormat.ITF,ZXing.BarcodeFormat.CODABAR]);
+  }
+  const reader=new ZXing.BrowserMultiFormatReader(hints,120);
+  const img=new Image(); img.src=canvas.toDataURL('image/png'); await img.decode();
+  try{const result=await reader.decodeFromImageElement(img);return String(result?.getText?.()||result?.text||'').trim()}finally{reader.reset?.()}
+}
+function normalizeBarcodeValue(key,v){
+  let s=String(v||'').trim().replace(/\s/g,'');
+  // 印刷條碼四欄皆為數字；保留 Box Qty 的前導 0。
+  const d=s.replace(/\D/g,''); if(!d)return '';
+  if(key==='orderQty')return d.replace(/^0+(?=\d)/,'');
+  return d;
+}
 function cropCanvas(src,r,zoom=2.5){
   const [rx,ry,rw,rh]=r, sx=Math.round(src.width*rx),sy=Math.round(src.height*ry),sw=Math.round(src.width*rw),sh=Math.round(src.height*rh);
   const c=document.createElement('canvas');c.width=Math.max(1,Math.round(sw*zoom));c.height=Math.max(1,Math.round(sh*zoom));
@@ -220,7 +264,7 @@ function parseRegionValue(key,raw){
   return v
 }
 async function prepareLabelCrop(file){
-  // V1.3.8：先自動尋找照片中的白色標籤，再依標籤本身比例切六區。
+  // V1.3.9：先自動尋找照片中的白色標籤，再依標籤本身比例切六區。
   // 不再假設標籤固定在畫面某一位置，可容忍近拍/遠拍及上下位置改變。
   const bmp=await createImageBitmap(file),w=bmp.width,h=bmp.height;
   const ds=Math.min(1,900/Math.max(w,h)),dw=Math.max(1,Math.round(w*ds)),dh=Math.max(1,Math.round(h*ds));
