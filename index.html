@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.3.9</title>
+<title>線邊棧板入庫 V1.3.10</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.3.9</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.3.10</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -124,7 +124,7 @@ async function recognizeLabel(file){
   }catch(e){console.warn('quick label',e)}
 
   const base=await prepareLabelCrop(file);
-  // V1.3.9：四個有條碼欄位先以 ZXing 解碼；OCR 只作備援。
+  // V1.3.10：四個有條碼欄位先以 ZXing 解碼；OCR 只作備援。
   // 直接依白色標籤版面切條碼區，避免 OCR 把條碼線誤認成數字。
   const bar=await decodePrintedBarcodes(base);
   if(bar.partNo) raws.push('BAR partNo: '+bar.partNo);
@@ -152,7 +152,22 @@ async function recognizeLabel(file){
       const a=assistLabelFromMasterV134({...out},rawAll); for(const k of Object.keys(specs)) if(!out[k]&&a[k])out[k]=a[k];
     }catch(e){console.warn('fallback OCR',e)}
   }
+  // V1.3.10：以已穩定辨識的 PO No. / Box Q'ty / N.W. 交叉鎖定更新資料。
+  // 三欄能唯一對到同一筆 master 時，直接採用該筆六欄正式值；避免 Part/Order/G.W. 的 OCR 雜訊放行。
+  const locked=lockLabelByStableFields(out);
+  if(locked){
+    raws.push('MASTER LOCK: PO+BOXQTY+NW => '+locked.partNo+' / '+locked.poNo);
+    for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw']) out[k]=locked[k];
+    out._verifiedByMaster=true;
+  }
   out.raw=raws.join('\n'); return out
+}
+function lockLabelByStableFields(p){
+  if(!state.master.length)return null;
+  const eqId=(a,b)=>normId(a)===normId(b);
+  const eqNum=(a,b)=>{const x=Number(a),y=Number(b);return Number.isFinite(x)&&Number.isFinite(y)&&Math.abs(x-y)<0.001};
+  const candidates=state.master.filter(m=>eqId(m.poNo,p.poNo)&&eqId(m.boxQty,p.boxQty)&&eqNum(m.nw,p.nw));
+  return candidates.length===1?candidates[0]:null;
 }
 async function quickLabelFromPhoto(file){
   let codes=[];
@@ -264,7 +279,7 @@ function parseRegionValue(key,raw){
   return v
 }
 async function prepareLabelCrop(file){
-  // V1.3.9：先自動尋找照片中的白色標籤，再依標籤本身比例切六區。
+  // V1.3.10：先自動尋找照片中的白色標籤，再依標籤本身比例切六區。
   // 不再假設標籤固定在畫面某一位置，可容忍近拍/遠拍及上下位置改變。
   const bmp=await createImageBitmap(file),w=bmp.width,h=bmp.height;
   const ds=Math.min(1,900/Math.max(w,h)),dw=Math.max(1,Math.round(w*ds)),dh=Math.max(1,Math.round(h*ds));
@@ -328,7 +343,7 @@ function assistLabelFromMasterV134(p,raw){
   for(const m of state.master){const hit={partNo:valueSeen(raw,m.partNo),poNo:valueSeen(raw,m.poNo),orderQty:valueSeen(raw,m.orderQty),boxQty:valueSeen(raw,m.boxQty),nw:valueSeen(raw,m.nw),gw:valueSeen(raw,m.gw)};const hits=Object.values(hit).filter(Boolean).length;const score=(hit.partNo?8:0)+(hit.poNo?7:0)+(hit.orderQty?3:0)+(hit.boxQty?3:0)+(hit.nw?2:0)+(hit.gw?2:0);if(score>bestScore){bestScore=score;best={m,hit};bestHits=hits}}
   if(best&&(((best.hit.partNo||best.hit.poNo)&&bestHits>=2)||bestHits>=4)){for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])p[k]=best.m[k];return p}return assistLabelFromMaster(p,raw)
 }
-function labelMissing(p){const req=[['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W.'],['gw','G.W.']];return req.filter(([k])=>p[k]===null||p[k]===undefined||p[k]==='').map(([,l])=>l)}
+function labelMissing(p){const req=[['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W.'],['gw','G.W.']];const missing=req.filter(([k])=>p[k]===null||p[k]===undefined||p[k]==='').map(([,l])=>l);if(!missing.length&&state.master.length&&!p._verifiedByMaster)missing.push('更新資料交叉確認');return missing}
 function assistLabelFromMaster(p,raw){if(!state.master.length)return p;const compact=String(raw||'').toUpperCase().replace(/[^A-Z0-9.]/g,'');const digits=String(raw||'').replace(/[^0-9.]/g,' ');const has=(v)=>{if(v===null||v===undefined||v==='')return false;const a=String(v).toUpperCase().replace(/[^A-Z0-9.]/g,'');if(a&&compact.includes(a))return true;const n=Number(v);if(Number.isFinite(n)){const variants=[String(v),String(n),String(v).replace(/^0+/,''),Number.isInteger(n)?String(Math.trunc(n)):n.toFixed(1)];return variants.some(x=>x&&digits.includes(x))}return false};let best=null,score=-1;for(const m of state.master){let sc=0;if(has(m.partNo))sc+=4;if(has(m.poNo))sc+=4;if(has(m.orderQty))sc+=2;if(has(m.boxQty))sc+=2;if(has(m.nw))sc+=2;if(has(m.gw))sc+=2;if(sc>score){score=sc;best=m}}if(best&&score>=8){for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])if(p[k]===null||p[k]===undefined||p[k]===''||has(best[k]))p[k]=best[k]}return p}
 async function recognizeBoxNo(file){const raw=await tesseractText(file,'Box OCR',1200);const compact=raw.replace(/\s/g,'');let boxNo='';const direct=(raw.match(/(?:C\s*\/?\s*NO\.?|BOX\s*NO\.?)\s*[:#-]?\s*([A-Z0-9-]{2,16})/i)||[])[1]||'';if(direct)boxNo=direct;const candidates=state.master.map(x=>x.boxNo).filter(Boolean).sort((a,b)=>b.length-a.length);if(!boxNo)for(const b of candidates){if(compact.toUpperCase().includes(normId(b).toUpperCase())){boxNo=b;break}}if(!boxNo){const tokens=(raw.match(/\b[0-9]{1,2}[A-Za-z][0-9A-Za-z-]{1,12}\b|\b[A-Za-z][0-9A-Za-z-]{2,12}\b/g)||[]);boxNo=tokens[0]||''}return{boxNo:normId(boxNo),raw}}
 function renderPartialLabel(p){const rows=FIELDS.map(([k,l])=>({label:l,ocr:k==='boxNo'?'等待第2張照片':p[k],master:'—',ok:null}));renderFields({rows})}
