@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.3.11</title>
+<title>線邊棧板入庫 V1.3.12</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.3.11</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.3.12</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -124,7 +124,7 @@ async function recognizeLabel(file){
   }catch(e){console.warn('quick label',e)}
 
   const base=await prepareLabelCrop(file);
-  // V1.3.11：四個有條碼欄位先以 ZXing 解碼；OCR 只作備援。
+  // V1.3.12：四個有條碼欄位先以 ZXing 解碼；OCR 只作備援。
   // 直接依白色標籤版面切條碼區，避免 OCR 把條碼線誤認成數字。
   const bar=await decodePrintedBarcodes(base);
   if(bar.partNo) raws.push('BAR partNo: '+bar.partNo);
@@ -133,13 +133,13 @@ async function recognizeLabel(file){
   if(bar.boxQty) raws.push('BAR boxQty: '+bar.boxQty);
   const specs={
     partNo:[.20,.10,.60,.31], orderQty:[.03,.42,.45,.25], poNo:[.52,.42,.45,.25],
-    boxQty:[.03,.70,.45,.27], nw:[.52,.70,.45,.14], gw:[.52,.84,.45,.14]
+    boxQty:[.03,.70,.45,.27], nw:[.80,.70,.19,.14], gw:[.80,.84,.19,.14]
   };
   const out={}; let i=0;
   for(const [key,r] of Object.entries(specs)){
     i++; setOCRState(`標籤分區 OCR ${i}/6`,'wait');
     try{
-      const c=cropCanvas(base,r,key==='partNo'?2.2:2.8);
+      const c=cropCanvas(base,r,key==='partNo'?2.2:(key==='nw'||key==='gw'?5.0:2.8));
       const raw=await tesseractCanvasText(c,`標籤 ${i}/6`); raws.push(key+': '+raw);
       out[key]=bar[key] || parseRegionValue(key,raw);
     }catch(e){console.warn('region OCR',key,e);out[key]=''}
@@ -152,11 +152,11 @@ async function recognizeLabel(file){
       const a=assistLabelFromMasterV134({...out},rawAll); for(const k of Object.keys(specs)) if(!out[k]&&a[k])out[k]=a[k];
     }catch(e){console.warn('fallback OCR',e)}
   }
-  // V1.3.11：以已穩定辨識的 PO No. / Box Q'ty / N.W. 交叉鎖定更新資料。
+  // V1.3.12：以已穩定辨識的 PO No. / Box Q'ty / N.W. 交叉鎖定更新資料。
   // 三欄能唯一對到同一筆 master 時，直接採用該筆六欄正式值；避免 Part/Order/G.W. 的 OCR 雜訊放行。
   const locked=lockLabelByStableFields(out);
   if(locked){
-    raws.push('MASTER LOCK V1.3.11 => '+locked.partNo+' / '+locked.poNo);
+    raws.push('MASTER LOCK V1.3.12 => '+locked.partNo+' / '+locked.poNo);
     for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw']) out[k]=locked[k];
     out._verifiedByMaster=true;
   }
@@ -166,7 +166,7 @@ function lockLabelByStableFields(p){
   if(!state.master.length)return null;
   const eqId=(a,b)=>normId(a)===normId(b);
   const eqNum=(a,b)=>{const x=Number(a),y=Number(b);return Number.isFinite(x)&&Number.isFinite(y)&&Math.abs(x-y)<0.001};
-  // V1.3.11：現場測試確認 Order Qty / PO No. / Box Qty 最穩定。
+  // V1.3.12：現場測試確認 Order Qty / PO No. / Box Qty 最穩定。
   // 先用這三欄唯一鎖定 master，再回填 Part No. / N.W. / G.W.，避免小數點與長碼 OCR 雜訊。
   let candidates=state.master.filter(m=>eqId(m.poNo,p.poNo)&&eqId(m.orderQty,p.orderQty)&&eqId(m.boxQty,p.boxQty));
   if(candidates.length===1)return candidates[0];
@@ -274,8 +274,14 @@ function parseRegionValue(key,raw){
   const nums=t.match(/\d+(?:\.\d+)?/g)||[];
   if(!nums.length)return '';
   if(key==='nw'||key==='gw'){
-    const ds=nums.filter(x=>x.includes('.')); if(ds.length)return Number(ds[ds.length-1]);
-    const n=nums[nums.length-1]; return n.length>=2?Number(n.slice(0,-1)+'.'+n.slice(-1)):Number(n)
+    // V1.3.12：重量只讀右側數值小格。優先接受含小數點的值；
+    // OCR 若漏掉小數點，僅在 2~4 位純數字時按最後一位補回 1 位小數。
+    // 單一雜訊數字不再視為有效重量，避免 2 / 5 被誤判成 N.W./G.W.。
+    const ds=nums.filter(x=>/^\d{1,3}\.\d{1,2}$/.test(x));
+    if(ds.length)return Number(ds[ds.length-1]);
+    const ints=nums.filter(x=>/^\d{2,4}$/.test(x));
+    if(ints.length){const n=ints[ints.length-1];return Number(n.slice(0,-1)+'.'+n.slice(-1))}
+    return ''
   }
   // 選最長數字串，避免把欄名中的雜訊當成資料；Qty 保留照片上的前導 0。
   let v=nums.sort((a,b)=>b.replace('.','').length-a.replace('.','').length)[0].replace(/\D/g,'');
@@ -284,7 +290,7 @@ function parseRegionValue(key,raw){
   return v
 }
 async function prepareLabelCrop(file){
-  // V1.3.11：先自動尋找照片中的白色標籤，再依標籤本身比例切六區。
+  // V1.3.12：先自動尋找照片中的白色標籤，再依標籤本身比例切六區。
   // 不再假設標籤固定在畫面某一位置，可容忍近拍/遠拍及上下位置改變。
   const bmp=await createImageBitmap(file),w=bmp.width,h=bmp.height;
   const ds=Math.min(1,900/Math.max(w,h)),dw=Math.max(1,Math.round(w*ds)),dh=Math.max(1,Math.round(h*ds));
@@ -352,7 +358,7 @@ function labelMissing(p){
   const req=[['partNo','Part No.'],['orderQty',"Order Q'ty"],['poNo','PO No.'],['boxQty',"Box Q'ty"],['nw','N.W.'],['gw','G.W.']];
   const missing=req.filter(([k])=>p[k]===null||p[k]===undefined||p[k]==='').map(([,l])=>l);
   if(missing.length)return missing;
-  // V1.3.11：讀到字元不等於辨識正確；先做基本格式/重量合理性檢查。
+  // V1.3.12：讀到字元不等於辨識正確；先做基本格式/重量合理性檢查。
   if(!/^\d{6,16}$/.test(String(p.partNo)))missing.push('Part No. 格式');
   if(!/^\d{1,8}$/.test(String(p.orderQty)))missing.push("Order Q'ty 格式");
   if(!/^\d{3,16}$/.test(String(p.poNo)))missing.push('PO No. 格式');
