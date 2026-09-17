@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0f3b64" />
 <link rel="manifest" href="manifest.json" />
-<title>線邊棧板入庫 V1.6.0</title>
+<title>線邊棧板入庫 V1.7.0</title>
 <style>
 :root{--bg:#f4f7fb;--card:#fff;--ink:#17324d;--muted:#6d7f90;--blue:#0f5b92;--green:#14834a;--red:#c23b32;--amber:#b46b00;--line:#d8e1ea}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -21,7 +21,7 @@ img.preview{width:100%;max-height:380px;object-fit:contain;background:#111;borde
 </style>
 </head>
 <body>
-<header><div><h1>📦 線邊棧板入庫 V1.6.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
+<header><div><h1>📦 線邊棧板入庫 V1.7.0</h1><small>Line-side Pallet Inbound / Penerimaan Palet</small></div><span id="clock"></span></header>
 <main>
 <section id="scanView">
   <div class="card">
@@ -111,30 +111,70 @@ async function tesseractText(file,prefix,maxSide=1600){
   const {data}=await Promise.race([job,timeout]);return data.text||''
 }
 async function recognizeLabel(file){
-  // V1.6.0：不依賴固定版型。整張白標做兩種影像 OCR，並用「欄名附近文字 + 條碼 + 更新資料」三方交叉確認。
-  // 正式六欄只有在 master 唯一候選成立時才回填，避免 OCR 猜錯直接入庫。
+  // V1.7.0：先定位白標，再依欄位座標逐格辨識。禁止從整張 OCR 猜欄位。
+  // 四個印刷碼以欄位條碼為第一來源、欄位 OCR 為第二來源；重量只讀各自數值格。
   const raws=[];
   const base=await prepareLabelCrop(file);
-  let raw1='',raw2='';
-  try{raw1=await tesseractCanvasText(base,'① 標籤 OCR A');raws.push('OCR-A:\n'+raw1)}catch(e){console.warn('OCR A',e)}
-  try{const hi=adaptiveLabelCanvas(base);raw2=await tesseractCanvasText(hi,'① 標籤 OCR B');raws.push('OCR-B:\n'+raw2)}catch(e){console.warn('OCR B',e)}
-  const raw=(raw1+'\n'+raw2).trim();
-  const out=parseSemanticLabel(raw);
-
-  // Safari 原生 BarcodeDetector 若可用就讀；同時以 ZXing 對整張標籤多尺度嘗試。
-  const codes=await detectAllBarcodes(file);
-  try{for(const v of await detectZXingEvidence(base))if(v&&!codes.includes(v))codes.push(v)}catch(e){console.warn('ZXing evidence',e)}
-  if(codes.length)raws.push('BARCODES='+codes.join(','));
-  applyBarcodeEvidence(out,codes);
-
+  const positioned=await recognizePositionedLabelV170(base);
+  const out=positioned.values;
+  raws.push(positioned.audit);
+  const codes=Object.values(positioned.barcodes).filter(Boolean);
+  const raw=Object.values(positioned.regionText).join('\n');
   const locked=lockMasterV160(out,raw,codes);
   if(locked){
     for(const k of ['partNo','orderQty','poNo','boxQty','nw','gw'])out[k]=locked[k];
     out._verifiedByMaster=true;
-    raws.push('MASTER LOCK V1.6.0 => '+locked.partNo+' / '+locked.poNo);
+    raws.push('MASTER LOCK V1.7.0 => '+locked.partNo+' / '+locked.poNo);
+  }else if(!state.master.length){
+    // 無更新資料時仍可顯示六欄；正式 7/7 比對前仍必須先匯入更新資料。
+    out._verifiedByMaster=false;
   }
   out.raw=raws.join('\n');
   return out;
+}
+async function recognizePositionedLabelV170(label){
+  // 座標均相對於「已定位的白標」，不是相對於相機畫面；可容忍遠近與畫面位置改變。
+  const valueZones={
+    partNo:[.30,.18,.40,.14],orderQty:[.25,.51,.25,.14],poNo:[.61,.51,.28,.14],
+    boxQty:[.25,.73,.25,.14],nw:[.80,.70,.19,.16],gw:[.80,.82,.19,.17]
+  };
+  const barcodeZones={
+    partNo:[.25,.25,.50,.24],orderQty:[.15,.56,.35,.20],poNo:[.55,.56,.40,.20],boxQty:[.15,.78,.35,.20]
+  };
+  const values={},barcodes={},regionText={};
+  for(const key of ['partNo','orderQty','poNo','boxQty']){
+    setOCRState('① 定位辨識 '+fieldNameV170(key),'wait');
+    try{barcodes[key]=normalizeBarcodeValue(key,await decodeZXingCanvas(cropCanvas(label,barcodeZones[key],4)))}catch(e){barcodes[key]=''}
+    const raw=await recognizeDigitsRegionV170(label,valueZones[key],key);regionText[key]=raw;
+    const ocr=parseRegionValue(key,raw);
+    values[key]=barcodes[key]||ocr;
+  }
+  for(const key of ['nw','gw']){
+    setOCRState('① 定位辨識 '+fieldNameV170(key),'wait');
+    const raw=await recognizeDigitsRegionV170(label,valueZones[key],key);regionText[key]=raw;
+    values[key]=parseRegionValue(key,raw);
+  }
+  return {values,barcodes,regionText,audit:'POSITIONED V1.7.0\n'+JSON.stringify({barcodes,regionText,values})};
+}
+function fieldNameV170(k){return({partNo:'Part No.',orderQty:"Order Q'ty",poNo:'PO No.',boxQty:"Box Q'ty",nw:'N.W.',gw:'G.W.'})[k]}
+async function recognizeDigitsRegionV170(label,zone,key){
+  const src=cropCanvas(label,zone,key==='nw'||key==='gw'?7:5);
+  const variants=[src,adaptiveLabelCanvas(src)];
+  const texts=[];
+  for(const c of variants){
+    for(const psm of ((key==='nw'||key==='gw')?[11,7]:[7,11]))try{
+        const {data}=await Tesseract.recognize(c,'eng',{tessedit_char_whitelist:'0123456789.',tessedit_pageseg_mode:psm});
+        if(data?.text)texts.push(data.text.trim());
+      }catch(e){console.warn('region OCR',key,e)}
+  }
+  const candidates=texts.flatMap(t=>String(t).match(/\d+(?:\.\d+)?/g)||[]);
+  if(key==='nw'||key==='gw'){
+    const decimal=candidates.find(x=>/^\d{1,3}\.\d{1,2}$/.test(x));
+    if(decimal)return decimal;
+    const joined=candidates.join('');
+    if(/^\d{2,3}$/.test(joined))return joined.slice(0,-1)+'.'+joined.slice(-1);
+  }
+  return candidates.sort((a,b)=>b.replace('.','').length-a.replace('.','').length)[0]||texts.join(' ');
 }
 function adaptiveLabelCanvas(src){
   const c=document.createElement('canvas');c.width=src.width;c.height=src.height;
@@ -418,6 +458,12 @@ async function prepareLabelCrop(file){
   if(xr&&yr){x0=xr[0];x1=xr[1];y0=yr[0];y1=yr[1]}
   // 合理性檢查：標籤應是橫向矩形，且不能小到只是一塊反光。
   let bw=x1-x0+1,bh=y1-y0+1;
+  // V1.7.0：條碼會讓白色投影在下半部中斷，舊版因此常只留下標籤上半部。
+  // 此版型完整外框寬高約 1.5:1；若偵測結果過扁，從已找到的上緣向下補足完整高度。
+  if(xr&&yr&&bw/bh>2.20){
+    const fullH=Math.round(bw/1.52);
+    if(fullH>bh&&y0+fullH<=dh){y1=y0+fullH-1;bh=fullH}
+  }
   if(!xr||!yr||bw<dw*.18||bh<dh*.07||bw/bh<1.15||bw/bh>3.8){
     x0=Math.round(dw*.05);x1=Math.round(dw*.95);y0=Math.round(dh*.08);y1=Math.round(dh*.70);bw=x1-x0+1;bh=y1-y0+1;
   }else{
